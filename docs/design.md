@@ -1,0 +1,112 @@
+# GeminiCode 検討メモ：スマホのブラウザから Gemini CLI を「Claude Code on the web」のように使う
+
+## 1. ゴール（Claude アプリの Code の使い心地を分解する）
+
+Claude アプリの Code（claude.ai/code）の体験を要素に分けると、次のとおり。
+
+| # | 体験要素 | 中身 |
+|---|---|---|
+| U1 | チャット UI | ターミナルではなく、スマホで読みやすいメッセージ形式。ツール実行はカードとして折りたたむ |
+| U2 | 非同期実行 | ブラウザを閉じてもタスクは走り続ける。戻ると途中経過が全部見える |
+| U3 | セッション一覧 | リポジトリ × タスク単位で複数セッションを並行して持てる |
+| U4 | 隔離環境 | セッションごとにクリーンなワークスペースがあり、本体 PC を汚さない |
+| U5 | Git 連携 | セッションごとにブランチを作り、commit / push / PR 作成まで行う |
+| U6 | 差分レビュー | 変更ファイルと diff をスマホで確認できる |
+| U7 | 権限確認 | 危険な操作はボタンで承認 / 拒否できる |
+| U8 | 通知 | 完了・承認待ちをプッシュ通知で知らせる |
+| U9 | 認証 | 自分だけがアクセスできる |
+
+この表の要素を、どの方式でどこまで満たせるかで比較する。
+
+## 2. Gemini CLI 側で使える口
+
+| 口 | 概要 | 向き不向き |
+|---|---|---|
+| 対話 TUI | 通常の `gemini` | スマホの画面幅とソフトキーボードでは厳しい |
+| Headless | `gemini -p "..." --output-format stream-json`（JSONL で `init` / `message` / `tool_use` / `tool_result` / `result` イベント）。`--resume <session_id>` で継続 | 単発実行と非同期ジョブには十分。途中で対話的に権限を確認する仕組みはなく、`--yolo` か許可ツールの事前指定が必要 |
+| ACP（Agent Client Protocol） | stdio 上の JSON-RPC。Zed などのエディタ連携用。セッション、ストリーミング差分、ツール呼び出しの進捗、**権限リクエスト**（`session/request_permission`）を構造化して扱える | UI を自作するなら最も適している。U1・U7 をそのまま実装できる |
+| GitHub Actions（run-gemini-cli） | Issue / PR のコメントをきっかけに実行 | 非同期で Git 連携も済むが、チャットのような使い心地にはならない |
+
+> 注意: ACP の起動フラグ（`--experimental-acp` → `--acp` など）は版によって変わってきた。実装前に、使う版の `gemini --help` で確認する。
+
+## 3. 方式の比較
+
+### A. Web ターミナル（ttyd / tmux + Tailscale）
+- 手間：最小（半日程度）。tmux を使えば U2 も満たせる。
+- 欠点：結局は TUI なので、U1・U6・U7・U8 は満たせない。スマホでの入力がつらい。
+- 位置付け：**すぐ試すための暫定策**。
+
+### B. 既存 OSS の Web UI（Gemini-CLI-UI、gemini-cli-desktop の Web 版など）
+- 利点：導入するだけでチャット UI が手に入る。レスポンシブ対応をうたうものもある。
+- 欠点：認証が無い / 弱い、メンテナンスが止まり気味、モバイルでは閲覧のみといった制限がある。U4・U5（隔離環境 + ブランチ + PR）は基本的に持っていない。
+- 位置付け：使い心地の確認と、UI の参考。
+
+### C. 自作：PWA + ゲートウェイ + ACP ワーカー（推奨）
+- 利点：表の U1〜U9 をすべて設計に入れられる。Gemini CLI 本体には手を入れず、外側で包むだけなので、CLI の更新に追随しやすい。
+- 欠点：開発が必要（MVP で数日〜2 週間規模）。
+
+### D. GitHub Issue 駆動（run-gemini-cli）
+- 利点：サーバーが不要で、U4・U5 は GitHub が担う。GitHub アプリからも操作できる。
+- 欠点：返事が遅く、チャットのやり取りにならない。
+- 位置付け：C の「放置タスク」モードの代わりや補完として有用。
+
+**結論：C を本命にする。立ち上げ期は A で凌ぎ、B は UI の参考にする。**
+
+## 4. 推奨構成（方式 C）
+
+```
+[スマホ PWA] ──HTTPS/WebSocket──> [ゲートウェイ] ──spawn/stdio(ACP)──> [ワーカー: gemini (ACP モード)]
+     │                                │                                  │
+     │ Web Push                       ├─ SQLite: セッション / イベントログ   └─ ワークスペース（git clone / worktree）
+     └────────────────────────────────┤                                      ※ セッションごとにコンテナ or ディレクトリ
+                                      └─ GitHub App / PAT（clone・push・PR）
+前段: Cloudflare Access / Tailscale / IAP（U9）
+```
+
+### 4.1 コンポーネント
+- **フロントエンド（PWA）**：React + Vite。チャット画面、ツールカード（展開すると引数と出力を表示）、権限確認のボトムシート、diff ビューア（`diff2html` など）、セッション一覧。ホーム画面に追加すればアプリのように使え、Web Push も受け取れる（iOS は 16.4 以降で PWA の Push に対応）。
+- **ゲートウェイ**：Node.js / TypeScript。ACP の公式 TS SDK（`@agentclientprotocol/sdk`）が使えるため TS を選ぶ。役割は次の 3 つ。
+  - ブラウザとの WebSocket 接続と、ワーカーのプロセスを**切り離す**（U2）。ACP のイベントはすべて SQLite に追記し、再接続したら続きから再生する。
+  - 権限リクエストを保留状態として保存し、Push で通知して、ブラウザからの応答を ACP に返す（U7・U8）。
+  - Git 操作（clone → `gemini/<session-id>` ブランチ作成 → commit / push → PR 作成）（U5）。
+- **ワーカー**：セッションごとに ACP モードの `gemini` を 1 プロセス起動する。作業ディレクトリはセッション専用。Docker で隔離すると U4 に近づく（Gemini CLI 自身のサンドボックス `--sandbox` と併用してもよい）。
+
+### 4.2 ホスティングの選択肢
+| 置き場所 | 長所 | 短所 |
+|---|---|---|
+| 自宅 PC / ミニ PC + Tailscale | 無料。手元のリポジトリや資格情報をそのまま使える | PC を起動しておく必要がある |
+| GCE e2-small 程度の VM + Cloudflare Access | 常時稼働、安価 | 月数百〜千円台 |
+| Cloud Run | サーバー管理が不要 | 長時間のプロセスと WebSocket に制約がある。セッション状態を外部に出す必要があり、今回の用途には不向き |
+
+→ **まずは自宅 PC か小さな VM の 1 台構成にする**。ワーカーのコンテナ化は後から入れる。
+
+### 4.3 Gemini の認証
+- 個人の Google ログイン（OAuth）：無料枠が使えるが、サーバー上では初回にブラウザでのログインが必要。一度ログインした `~/.gemini` の資格情報をサーバーに置く形になる。
+- `GEMINI_API_KEY` または Vertex AI：サーバー運用ならこちらが素直。
+
+### 4.4 セキュリティ
+- アプリに独自のログインは作らず、**前段のゼロトラスト（Cloudflare Access / Tailscale）で守る**。
+- `--yolo` は既定で無効にする。セッションごとに「自動承認するツール」を UI で選べるようにする（Claude Code の permission mode に相当）。
+- GitHub の資格情報は、対象リポジトリだけに絞った fine-grained PAT か GitHub App を使う。
+
+## 5. 段階的な計画
+
+| フェーズ | 内容 | 満たす要素 |
+|---|---|---|
+| P0（半日） | ttyd + tmux + Tailscale で、スマホから既存の TUI を使えるようにする | U2・U9（暫定） |
+| P1（MVP） | ゲートウェイ + ACP ワーカー 1 本 + チャット PWA。単一リポジトリ、ローカルディレクトリ | U1・U2・U7・U9 |
+| P2 | セッション一覧、ブランチと PR の自動化、diff ビュー | U3・U5・U6 |
+| P3 | Web Push、ワーカーのコンテナ隔離、Headless による「投げっぱなし」モード | U4・U8 |
+| P4（任意） | GitHub Issue 駆動（run-gemini-cli）との連携、音声入力、画像添付 | — |
+
+## 6. 未確定事項（次に決めること）
+1. ホスティング先：自宅 PC か VM か
+2. Gemini の認証方式：OAuth の無料枠か API キーか
+3. 対象リポジトリ：GitHub だけか、ローカル専用もあるか
+4. P1 の着手：本リポジトリに `gateway/`（TS）と `web/`（PWA）を作る
+
+## 参考
+- Headless mode reference: https://geminicli.com/docs/cli/headless.md
+- Gemini-CLI-UI（コミュニティ製）: https://gittrend.io/repo/cruzyjapan/Gemini-CLI-UI
+- gemini-cli-desktop（コミュニティ製）: https://x-cmd.com/install/gemini-cli-desktop
+- ACP の統合例: https://docs.paperclip.ing/reference/adapters/gemini-cli.md
