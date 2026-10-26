@@ -136,10 +136,13 @@ cd ~/GeminiCode
 ./deploy/login-google.sh
 ```
 
+先に `/etc/geminicode/env` に `GEMINICODE_AUTH=google` の行（1 行で）があることを確認してください。無ければスクリプトが中止して案内を出します。ログインの間、スクリプトは geminicode サービスを止め、終わったら起動し直します。
+
 1. 表示される URL を PC のブラウザで開き、Pro を契約している Google アカウントでログインする
 2. 画面に出た認証コードを WSL に貼り付けて Enter
 3. Gemini CLI の入力欄が出たら `/quit` で終了
-4. `sudo systemctl restart geminicode`
+
+URL が出ずに「Enter Gemini API Key」の画面が出た場合は、Ctrl+C を 2 回押して終了し、env の `GEMINICODE_AUTH` の行を確認してからやり直してください。
 
 ログイン情報は GeminiCode 専用のフォルダに保存され、普段使う `gemini` のログインとは別です。数か月使わなかったり、Google アカウント側でアクセスを取り消したりすると、再ログインが必要になります。そのときは画面のエラーに案内が出るので、同じ手順をやり直してください。
 
@@ -192,7 +195,7 @@ powershell -ExecutionPolicy Bypass -File \\wsl$\Ubuntu\home\<WSLのユーザー�
 | `forbidden` | `ALLOWED_EMAILS` にログインしたメールアドレスが入っているか |
 | リポジトリ一覧が空 / `GitHub API ... 401` | `GITHUB_TOKEN` の有効期限と、対象リポジトリが選ばれているか |
 | `API key not valid` | `GEMINI_API_KEY` |
-| 「Google アカウントでのログインが済んでいません」 | `./deploy/login-google.sh` を実行してから `sudo systemctl restart geminicode` |
+| 「Google アカウントでのログインが済んでいません」 | `./deploy/login-google.sh` を実行する |
 | 「daily quota」「上限に達しました」 | API キーの無料枠を使い切っています。`GEMINICODE_AUTH=google` に切り替えると Pro 契約の枠が使えます |
 | 「リトライしています」と出たまま進まない | Gemini API が混雑（503）または上限（429）です。■ で停止し、入力欄の左上のボタンでモデルを Flash 系に切り替えてから送り直してください。停止して 5 秒たっても終わらないときは、Gemini CLI を終了させて止めます |
 | 「考えています…」のまま進まない | `journalctl -u geminicode -n 40` に `[session …] initialized` と `ACP session … ready` が出ているか。出ていなければ、Gemini CLI の起動で止まっています。2 分で時間切れのエラーになり、そのとき Gemini CLI の出力が画面に表示されます |

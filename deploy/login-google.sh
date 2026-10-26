@@ -20,9 +20,28 @@ GEMINI_HOME="$(env_value GEMINICODE_GEMINI_HOME)"
 GEMINI_HOME="${GEMINI_HOME:-$DATA_DIR/gemini-home}"
 
 if [ "$(env_value GEMINICODE_AUTH)" != "google" ]; then
-  echo "注意: $ENV_FILE に GEMINICODE_AUTH=google がまだありません。ログイン後に追記して、サービスを再起動してください。"
-  echo
+  # The gateway rewrites the auth type at startup, so with any other value it would undo this login.
+  echo "$ENV_FILE に GEMINICODE_AUTH=google の行がありません（前の行とくっついている場合も含む）。" >&2
+  echo "次のコマンドで確認し、1 行で GEMINICODE_AUTH=google と書いてから、もう一度実行してください。" >&2
+  echo "  sudo grep -n GEMINICODE_AUTH $ENV_FILE" >&2
+  echo "  sudo nano $ENV_FILE" >&2
+  exit 1
 fi
+
+# Keep the gateway (and any Gemini CLI it started) from touching the settings during the login.
+service_was_active=false
+if systemctl is-active --quiet geminicode 2>/dev/null; then
+  service_was_active=true
+  echo "ログインの間、geminicode サービスを停止します。"
+  sudo systemctl stop geminicode
+fi
+restart_service() {
+  if [ "$service_was_active" = true ]; then
+    echo "geminicode サービスを起動します。"
+    sudo systemctl start geminicode
+  fi
+}
+trap restart_service EXIT
 
 # Select "Log in with Google" in the private settings (the gateway does the same at startup).
 mkdir -p "$GEMINI_HOME/.gemini"
@@ -51,7 +70,6 @@ env -u GEMINI_API_KEY GEMINI_CLI_HOME="$GEMINI_HOME" GEMINI_FORCE_FILE_STORAGE=t
 if [ -f "$GEMINI_HOME/.gemini/gemini-credentials.json" ] || [ -f "$GEMINI_HOME/.gemini/oauth_creds.json" ]; then
   echo
   echo "ログイン情報を保存しました: $GEMINI_HOME/.gemini/"
-  echo "反映: sudo systemctl restart geminicode"
 else
   echo
   echo "ログイン情報が見つかりません。もう一度実行してください。" >&2
