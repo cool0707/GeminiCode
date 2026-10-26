@@ -94,11 +94,13 @@ env の項目は `deploy/env.example` のコメントを参照してください
 3. 「Choose your environment」で **Debian**・**64-bit** を選び、表示されるコマンドを WSL で実行する。
    - 上の枠: cloudflared のインストール
    - 下の枠: `sudo cloudflared service install <トークン>`（systemd サービスとして登録されます）
-4. ダッシュボードに Connector が **Connected** と出たら Next。
-5. **Public Hostname** を追加する:
-   - Subdomain: `gemini` / Domain: `example.com`
-   - Service: Type **HTTP**、URL **localhost:8080**
-6. Save。
+4. トンネルの Overview で Status が **Healthy**、Replicas に自分の PC が出ていれば接続できています。
+5. 公開するホスト名を追加する（旧画面の「Public Hostname」は、新しい画面では **Routes** になりました）:
+   - トンネルの Overview にある **Add route**（または上部の **Routes** タブ → Add route）を押す。
+   - 種類は **Published application** を選ぶ。
+   - Hostname: Subdomain `gemini`、Domain `example.com`（ドロップダウンから選ぶ）
+   - Service URL: `http://localhost:8080`
+6. **Add route** で保存する。`gemini.example.com` の DNS レコードは自動で作られます。
 
 ## 8. Cloudflare Access でアクセスを自分だけに絞る
 
