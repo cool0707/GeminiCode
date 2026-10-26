@@ -78,7 +78,7 @@ Claude アプリの Code（claude.ai/code）の体験を要素に分けると、
 | GCE e2-small 程度の VM + Cloudflare Access | 常時稼働、安価 | 月数百〜千円台 |
 | Cloud Run | サーバー管理が不要 | 長時間のプロセスと WebSocket に制約がある。セッション状態を外部に出す必要があり、今回の用途には不向き |
 
-→ **まずは自宅 PC か小さな VM の 1 台構成にする**。ワーカーのコンテナ化は後から入れる。
+→ **自宅 Windows の WSL2 に決定**（§7 を参照）。ワーカーのコンテナ化は後から入れる。
 
 ### 4.3 Gemini の認証
 - 個人の Google ログイン（OAuth）：無料枠が使えるが、サーバー上では初回にブラウザでのログインが必要。一度ログインした `~/.gemini` の資格情報をサーバーに置く形になる。
@@ -99,11 +99,57 @@ Claude アプリの Code（claude.ai/code）の体験を要素に分けると、
 | P3 | Web Push、ワーカーのコンテナ隔離、Headless による「投げっぱなし」モード | U4・U8 |
 | P4（任意） | GitHub Issue 駆動（run-gemini-cli）との連携、音声入力、画像添付 | — |
 
-## 6. 未確定事項（次に決めること）
-1. ホスティング先：自宅 PC か VM か
-2. Gemini の認証方式：OAuth の無料枠か API キーか
-3. 対象リポジトリ：GitHub だけか、ローカル専用もあるか
-4. P1 の着手：本リポジトリに `gateway/`（TS）と `web/`（PWA）を作る
+## 6. 決定事項
+| 項目 | 決定 |
+|---|---|
+| ホスティング | 自宅 Windows の WSL2 |
+| Gemini の認証 | `GEMINI_API_KEY` |
+| スマホからの経路 | Tailscale は挟まない（スマホ側でアプリを常駐させず、バッテリー消費を避けるため） |
+| 対象リポジトリ | GitHub のみ |
+
+## 7. 決定事項を反映した具体構成
+
+```
+[スマホ PWA] ─HTTPS/WSS─> [Cloudflare Edge + Access（認証）] ─(外向きトンネル)─> [WSL2: cloudflared] ─> [ゲートウェイ :8080] ─ACP─> [gemini]
+                                                                                   ※ Windows 側のポート開放・ルーター設定は不要
+```
+
+### 7.1 外部公開：Cloudflare Tunnel + Cloudflare Access（推奨）
+- WSL 内の `cloudflared` から Cloudflare へ**外向き**に接続するため、ポート開放も固定 IP も不要。スマホ側にアプリを入れる必要もない。
+- Cloudflare Access（無料枠は 50 ユーザーまで）で、`gemini.<自分のドメイン>` へのアクセスを、自分のメールアドレス（ワンタイム PIN か Google ログイン）に限定する。セッション有効期間を長め（例：1 か月）にすれば、スマホでの再ログインはほとんど発生しない。
+- WebSocket と Web Push（HTTPS が必須）はどちらもトンネル越しに動く。
+- 前提：Cloudflare で管理するドメインが 1 つ必要（年 1,500 円前後）。
+- ゲートウェイ側でも `Cf-Access-Jwt-Assertion` ヘッダーの JWT を検証し、トンネルを経由しない直接アクセスを拒否する（多層防御）。ゲートウェイは `127.0.0.1` だけで待ち受ける。
+
+代替案：**Tailscale Funnel**（`*.ts.net` を公開 HTTPS にする機能で、スマホ側に Tailscale は不要）。ドメインは要らないが認証層が無いため、アプリ側でパスキー（WebAuthn）か GitHub OAuth のログインを自作する必要がある。ドメインを用意しない場合の選択肢として残す。
+
+### 7.2 WSL2 を常時稼働させる
+WSL2 はクライアントプロセスがいなくなると停止するため、次の対策をとる。
+1. `/etc/wsl.conf` に `[boot] systemd=true` を書き、`cloudflared` とゲートウェイを systemd サービスとして登録する。
+2. Windows の**タスクスケジューラ**に、ログオン時（またはスタートアップ時）に `wsl.exe -d Ubuntu --exec sleep infinity` を非表示で実行するタスクを登録し、ディストリビューションを生かし続ける。
+3. `%UserProfile%\.wslconfig` に `[wsl2] vmIdleTimeout=-1` を書く。
+4. Windows の電源設定で「スリープしない」にする（電源接続時のみでも可）。Windows Update による再起動にも備え、2. のタスクで自動復帰させる。
+5. ゲートウェイは起動時に「実行中だったセッション」を検知し、中断した状態として UI に表示する。`--resume` か ACP の `session/load` で再開できるようにする。
+
+### 7.3 API キーと課金
+- API キーは `/etc/geminicode/env`（パーミッション 600）に置き、systemd の `EnvironmentFile=` でワーカーに渡す。リポジトリにもフロントエンドにも出さない。
+- Google Cloud の予算アラートを設定する。ゲートウェイ側でもセッションごとのトークン使用量を表示し、1 日あたりの上限（ソフトリミット）を設ける。
+
+### 7.4 GitHub 連携
+- 認証は **fine-grained PAT**（対象リポジトリだけに限定し、Contents: Read/Write と Pull requests: Read/Write を付与）から始める。複数人で使うことや細かい権限管理が必要になれば GitHub App に移行する。
+- clone 先は WSL の ext4 側（`~/geminicode/workspaces/<session-id>`）にする。`/mnt/c` 配下は I/O が遅いので使わない。
+- 1 セッション = 1 ブランチ（`gemini/<短い説明>-<id>`）。PR の作成は REST API（Octokit）で行う。
+- 新規セッション画面のリポジトリ選択肢は、PAT で取得できるリポジトリ一覧から作る。
+
+### 7.5 隔離（P3）
+- WSL 内に Docker Engine を直接入れる（Docker Desktop は不要）。ワーカーはセッションごとのコンテナ内で `gemini` を ACP モードで起動し、ワークスペースだけをマウントする。
+- ゲートウェイとコンテナの間は、`docker exec -i` の stdio に ACP をそのまま流す。
+
+## 8. 次の作業（P1）
+本リポジトリを次の構成で作る。
+- `gateway/`：Node.js + TypeScript（Fastify + ws、`@agentclientprotocol/sdk`、better-sqlite3、Octokit）
+- `web/`：React + Vite の PWA
+- `deploy/`：systemd ユニット、`cloudflared` の設定例、Windows タスクスケジューラ用の XML、`.wslconfig` と `wsl.conf` の例
 
 ## 参考
 - Headless mode reference: https://geminicli.com/docs/cli/headless.md
