@@ -108,7 +108,8 @@ env の項目は `deploy/env.example` のコメントを参照してください
 2. Destination（Application domain）: `gemini.example.com`。
 3. Policy を追加: Action **Allow**、Include → **Emails** → 自分のメールアドレス。ポリシー側の Session duration は「Same as application session timeout」のままにする（ポリシー側で値を入れると、アプリ側の設定より優先されます）。
 4. **Authentication**:
-   - Accept all available identity providers: オンのまま（既定の **One-time PIN** = メールに届くコードでログイン、が使われます）。
+   - Accept all available identity providers: オンのまま。2026 年 6 月以降に作った Zero Trust 組織では、ログイン方法の既定が **Cloudflare**（Cloudflare アカウントでログイン）だけになっています。これで問題ありません。ポリシーのメールアドレスを Cloudflare アカウントのメールアドレスと同じにしてください。Cloudflare アカウントの 2 段階認証も有効にしておくと安心です。
+     - メールに届くコードでログインしたい場合は、Zero Trust → **Integrations → Identity providers** で **One-time PIN** を追加します。
    - Apply instant authentication: **オン**（ログイン方法が 1 つだけのとき、ログイン方法の選択画面を飛ばします）。
    - Authenticate with Cloudflare One Client: オフのまま。
 5. **Details**: Name は任意（例: `GeminiCode`）、Session Duration は **1 month**（スマホで何度もログインしなくて済むように）。
