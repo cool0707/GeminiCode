@@ -1,0 +1,18 @@
+{
+  "name": "geminicode",
+  "private": true,
+  "description": "Use Gemini CLI from a phone browser, Claude Code on the web style",
+  "workspaces": [
+    "gateway",
+    "web"
+  ],
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "build": "npm run build -w web && npm run build -w gateway",
+    "start": "npm start -w gateway",
+    "test": "npm test -w gateway",
+    "typecheck": "npm run typecheck -w web && npm run typecheck -w gateway"
+  }
+}
