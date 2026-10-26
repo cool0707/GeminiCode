@@ -104,12 +104,16 @@ env の項目は `deploy/env.example` のコメントを参照してください
 
 ## 8. Cloudflare Access でアクセスを自分だけに絞る
 
-1. Zero Trust → **Access → Applications → Add an application → Self-hosted**。
-2. Application name: `GeminiCode`、Session Duration: **1 month**（スマホで何度もログインしなくて済むように）。
-3. Application domain: `gemini.example.com`。
-4. Policy を追加: Action **Allow**、Include → **Emails** → 自分のメールアドレス。
-5. ログイン方法は既定の **One-time PIN**（メールに届くコードでログイン）で十分です。Google ログインにしたい場合は Settings → Authentication で Google を追加します。
-6. 保存後、アプリの **Overview** に出る **Application Audience (AUD) Tag** をコピーし、`/etc/geminicode/env` の `CF_ACCESS_AUD` に貼る。`CF_ACCESS_TEAM_DOMAIN` には `myteam.cloudflareaccess.com` を入れる。`ALLOWED_EMAILS` にも同じメールアドレスを入れる。
+1. Zero Trust → **Access controls → Applications → Add an application → Self-hosted**。
+2. Destination（Application domain）: `gemini.example.com`。
+3. Policy を追加: Action **Allow**、Include → **Emails** → 自分のメールアドレス。ポリシー側の Session duration は「Same as application session timeout」のままにする（ポリシー側で値を入れると、アプリ側の設定より優先されます）。
+4. **Authentication**:
+   - Accept all available identity providers: オンのまま（既定の **One-time PIN** = メールに届くコードでログイン、が使われます）。
+   - Apply instant authentication: **オン**（ログイン方法が 1 つだけのとき、ログイン方法の選択画面を飛ばします）。
+   - Authenticate with Cloudflare One Client: オフのまま。
+5. **Details**: Name は任意（例: `GeminiCode`）、Session Duration は **1 month**（スマホで何度もログインしなくて済むように）。
+6. **Create** で保存する。
+7. 作成したアプリを開き、Overview（または Basic information）に出る **Application Audience (AUD) Tag** をコピーし、`/etc/geminicode/env` の `CF_ACCESS_AUD` に貼る。`CF_ACCESS_TEAM_DOMAIN` には `myteam.cloudflareaccess.com` を入れる。`ALLOWED_EMAILS` にも同じメールアドレスを入れる。
 
 ## 9. サービスを起動する（WSL 内）
 
