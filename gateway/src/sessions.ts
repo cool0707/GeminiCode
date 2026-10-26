@@ -58,6 +58,9 @@ export interface SessionManagerEvents {
 
 const CANCEL_GRACE_MS = 5000;
 
+const LOGIN_HINT =
+  'WSL で `~/GeminiCode/deploy/login-google.sh` を実行して Google でログインしてから、もう一度送信してください。';
+
 const ACTIVE: SessionStatus[] = ['starting', 'idle', 'running', 'waiting'];
 
 export class SessionManager extends EventEmitter<SessionManagerEvents> {
@@ -75,7 +78,7 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
     this.recoverAfterRestart();
   }
 
-  /** Pins the agent's auth method to the API key in its private settings file. */
+  /** Pins the agent's auth method (API key or Google login) in its private settings file. */
   private prepareGeminiHome(): void {
     const dir = path.join(this.cfg.geminiHome, '.gemini');
     const file = path.join(dir, 'settings.json');
@@ -88,9 +91,19 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
     }
     settings.security ??= {};
     settings.security.auth ??= {};
-    if (settings.security.auth.selectedType === 'gemini-api-key') return;
-    settings.security.auth.selectedType = 'gemini-api-key';
+    const selectedType = this.cfg.auth === 'google' ? 'oauth-personal' : 'gemini-api-key';
+    if (settings.security.auth.selectedType === selectedType) return;
+    settings.security.auth.selectedType = selectedType;
     fs.writeFileSync(file, JSON.stringify(settings, null, 2) + '\n');
+  }
+
+  /** With Google login, a missing login would make Gemini CLI wait for a browser; fail fast instead. */
+  private checkGoogleLogin(): void {
+    if (this.cfg.auth !== 'google') return;
+    const dir = path.join(this.cfg.geminiHome, '.gemini');
+    if (!['gemini-credentials.json', 'oauth_creds.json'].some((f) => fs.existsSync(path.join(dir, f)))) {
+      throw new Error(`Google アカウントでのログインが済んでいません。\n${LOGIN_HINT}`);
+    }
   }
 
   private log(id: string, msg: string): void {
@@ -224,9 +237,15 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
   private agentEnv(debugLogFile?: string): NodeJS.ProcessEnv {
     const env: NodeJS.ProcessEnv = {
       ...process.env,
-      GEMINI_API_KEY: this.cfg.geminiApiKey,
       GEMINI_CLI_HOME: this.cfg.geminiHome,
+      // Never try to open a browser for a login; fail and print the URL instead.
+      NO_BROWSER: 'true',
+      // Gemini CLI skips the OS keychain only when it sees WSL variables, which systemd services
+      // lack; force the encrypted file so the service finds what deploy/login-google.sh stored.
+      GEMINI_FORCE_FILE_STORAGE: 'true',
     };
+    if (this.cfg.auth === 'api-key') env.GEMINI_API_KEY = this.cfg.geminiApiKey;
+    else delete env.GEMINI_API_KEY;
     if (debugLogFile) env.GEMINI_DEBUG_LOG_FILE = debugLogFile;
     // The agent runs shell commands on the model's behalf: keep gateway secrets out of its reach.
     for (const k of ['GITHUB_TOKEN', 'CF_ACCESS_AUD', 'CF_ACCESS_TEAM_DOMAIN']) delete env[k];
@@ -306,6 +325,7 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
     });
 
     const startup = (async () => {
+      this.checkGoogleLogin();
       const init = await client.initialize();
       this.log(id, 'initialized');
       let modes, models;
@@ -354,6 +374,7 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
         reject(
           new Error(
             `Gemini CLI が ${this.cfg.startupTimeoutMs / 1000} 秒以内に起動しませんでした。` +
+              (/authoriz|accounts\.google\.com/i.test(output) ? `\n\n${LOGIN_HINT}` : '') +
               (output ? `\n\nGemini CLI の出力:\n${output}` : ''),
           ),
         );
@@ -518,6 +539,7 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
 
   /** session/new does not call the model API, so this costs no tokens. */
   private async probeModels(): Promise<ModelInfo[]> {
+    this.checkGoogleLogin();
     const dir = path.join(this.cfg.dataDir, 'probe');
     fs.mkdirSync(dir, { recursive: true });
     const client = new AcpClient(this.cfg.geminiBin, ['--acp', '--skip-trust', ...this.cfg.geminiArgs], {

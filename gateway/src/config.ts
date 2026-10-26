@@ -22,6 +22,8 @@ export interface Config {
   startupTimeoutMs: number;
   geminiHome: string;
   defaultModel: string;
+  /** 'api-key': GEMINI_API_KEY. 'google': the Google account login (uses a Google AI Pro/Ultra plan's quota). */
+  auth: 'api-key' | 'google';
   dailyTokenLimit: number;
 }
 
@@ -54,6 +56,7 @@ export function loadConfig(): Config {
     // (e.g. "Log in with Google", which waits for a browser) never applies here.
     geminiHome: env('GEMINICODE_GEMINI_HOME', path.join(dataDir, 'gemini-home')),
     defaultModel: env('GEMINICODE_DEFAULT_MODEL', 'auto'),
+    auth: env('GEMINICODE_AUTH', 'api-key') as Config['auth'],
     dailyTokenLimit: Number(env('GEMINICODE_DAILY_TOKEN_LIMIT', '0')),
   };
   return cfg;
@@ -61,7 +64,8 @@ export function loadConfig(): Config {
 
 export function validateConfig(cfg: Config): string[] {
   const errors: string[] = [];
-  if (!cfg.geminiApiKey) errors.push('GEMINI_API_KEY is not set');
+  if (cfg.auth !== 'api-key' && cfg.auth !== 'google') errors.push('GEMINICODE_AUTH must be "api-key" or "google"');
+  if (cfg.auth === 'api-key' && !cfg.geminiApiKey) errors.push('GEMINI_API_KEY is not set (or set GEMINICODE_AUTH=google)');
   if (!cfg.githubToken) errors.push('GITHUB_TOKEN is not set');
   if (!cfg.insecureNoAuth && (!cfg.cfAccessTeamDomain || !cfg.cfAccessAud)) {
     errors.push('CF_ACCESS_TEAM_DOMAIN and CF_ACCESS_AUD are required (or set GEMINICODE_INSECURE_NO_AUTH=1 for local development)');

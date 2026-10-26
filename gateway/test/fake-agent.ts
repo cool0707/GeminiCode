@@ -54,15 +54,19 @@ async function handle(msg: any): Promise<unknown> {
       return { protocolVersion: 1, agentCapabilities: { loadSession: true }, authMethods: [] };
     case 'session/new': {
       cwd = p.cwd;
-      if (process.env.GEMINI_API_KEY !== 'test-key') throw { code: -32000, message: 'no api key' };
-      // Like the real CLI: a saved "Log in with Google" choice wins over the API key and
-      // waits for a browser login, printing the URL (no newline) to stdout.
+      // Like the real CLI: the saved auth type wins. "Log in with Google" without stored
+      // credentials waits for a login, printing the URL (no newline) to stdout.
+      const geminiDir = path.join(process.env.GEMINI_CLI_HOME ?? '', '.gemini');
       let selected = '';
       try {
-        const file = path.join(process.env.GEMINI_CLI_HOME ?? '', '.gemini', 'settings.json');
-        selected = JSON.parse(fs.readFileSync(file, 'utf8')).security.auth.selectedType;
+        selected = JSON.parse(fs.readFileSync(path.join(geminiDir, 'settings.json'), 'utf8')).security.auth.selectedType;
       } catch {}
-      if (selected !== 'gemini-api-key') {
+      if (selected === 'gemini-api-key' && process.env.GEMINI_API_KEY !== 'test-key') {
+        throw { code: -32000, message: 'Gemini API key is missing or not configured.' };
+      }
+      const loggedIn =
+        process.env.GEMINI_FORCE_FILE_STORAGE === 'true' && fs.existsSync(path.join(geminiDir, 'gemini-credentials.json'));
+      if (selected !== 'gemini-api-key' && !(selected === 'oauth-personal' && loggedIn)) {
         process.stdout.write('\x1b[?1049hPlease visit the following URL to authorize the application: https://accounts.google.com/o/oauth2/auth');
         return new Promise(() => {});
       }
@@ -120,7 +124,8 @@ async function handle(msg: any): Promise<unknown> {
         }
       }
       update(p.sessionId, { sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'Thinking about the request.' } });
-      for (const chunk of ['echo: ', text, '\n\n- `hello.txt` を作成\n- **完了**', `\n\nmodel: ${models.currentModelId}`]) {
+      const envInfo = `\n\napikey=${process.env.GEMINI_API_KEY ? 'set' : 'unset'}`;
+      for (const chunk of ['echo: ', text, envInfo, '\n\n- `hello.txt` を作成\n- **完了**', `\n\nmodel: ${models.currentModelId}`]) {
         update(p.sessionId, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: chunk } });
       }
       fs.writeFileSync(path.join(cwd, '.git', 'fake-saved'), '');

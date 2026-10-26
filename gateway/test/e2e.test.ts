@@ -19,6 +19,7 @@ let ghServer: http.Server;
 let app: FastifyInstance;
 let sessions: SessionManager;
 let db: Db;
+let cfg: Config;
 
 function sh(args: string[], cwd: string) {
   return execFileSync('git', args, { cwd, encoding: 'utf8' });
@@ -61,7 +62,7 @@ before(async () => {
   const agentBin = path.join(tmp, 'fake-gemini');
   fs.writeFileSync(agentBin, `#!/bin/sh\nexec "${process.execPath}" "${path.join(import.meta.dirname, 'fake-agent.js')}" "$@"\n`, { mode: 0o755 });
 
-  const cfg: Config = {
+  cfg = {
     host: '127.0.0.1',
     port: 0,
     dataDir: path.join(tmp, 'data'),
@@ -82,6 +83,7 @@ before(async () => {
     startupTimeoutMs: 3000,
     geminiHome: path.join(tmp, 'gemini-home'),
     defaultModel: 'auto',
+    auth: 'api-key',
     dailyTokenLimit: 0,
   };
   fs.mkdirSync(cfg.dataDir, { recursive: true });
@@ -168,7 +170,7 @@ test('full session: clone, permission, diff, PR, resume', async () => {
   await waitFor(() => db.getSession(id)?.status === 'idle', 'idle after first turn');
 
   const kinds = db.eventsAfter(id, 0).map((e) => e.kind);
-  assert.deepEqual(kinds.filter((k) => k !== 'system'), ['user', 'update', 'permission', 'permission_resolved', 'update', 'update', 'update', 'update', 'update', 'update', 'turn_end']);
+  assert.deepEqual(kinds.filter((k) => k !== 'system'), ['user', 'update', 'permission', 'permission_resolved', 'update', 'update', 'update', 'update', 'update', 'update', 'update', 'turn_end']);
 
   const diff = await api('GET', `/api/sessions/${id}/diff`);
   assert.deepEqual(diff.json.files, [{ path: 'hello.txt', added: 1, removed: 0 }]);
@@ -274,6 +276,7 @@ test('chosen model is applied, retries are shown once each, and the model can be
   );
   assert.match((retries[0].data as any).text, /混雑/);
   assert.match(texts(), /model: gemini-3-flash-preview/);
+  assert.match(texts(), /apikey=set/);
 
   assert.equal((await api('POST', `/api/sessions/${id}/model`, { modelId: 'auto' })).status, 200);
   assert.equal(db.getSession(id)?.model, 'auto');
@@ -307,4 +310,37 @@ test('stop ends a turn the agent will not cancel, and the session resumes afterw
     db.eventsAfter(id, before).some((e) => e.kind === 'system' && /新しい会話として続けます/.test((e.data as any).text)),
     'falls back to a new agent conversation',
   );
+});
+
+test('Google login mode: asks for the login instead of hanging, then works once logged in', async () => {
+  const gcfg: Config = {
+    ...cfg,
+    auth: 'google',
+    geminiApiKey: '',
+    dataDir: path.join(tmp, 'data-google'),
+    geminiHome: path.join(tmp, 'gemini-home-google'),
+  };
+  fs.mkdirSync(gcfg.dataDir, { recursive: true });
+  const gdb = new Db(path.join(gcfg.dataDir, 'test.db'));
+  const gsessions = new SessionManager(gcfg, gdb);
+  try {
+    const settings = JSON.parse(fs.readFileSync(path.join(gcfg.geminiHome, '.gemini', 'settings.json'), 'utf8'));
+    assert.equal(settings.security.auth.selectedType, 'oauth-personal');
+
+    // Not logged in yet: the model list falls back instead of hanging, and a session fails fast.
+    assert.deepEqual((await gsessions.models()).models.map((m) => m.modelId), ['auto']);
+    const row = await gsessions.create({ repo: 'owner/repo', prompt: 'hello google' });
+    await waitFor(() => gdb.getSession(row.id)?.status === 'error', 'login required', 5000);
+    assert.match(gdb.getSession(row.id)!.error!, /ログインが済んでいません[\s\S]*login-google\.sh/);
+
+    // After deploy/login-google.sh has stored credentials, the same session works.
+    fs.writeFileSync(path.join(gcfg.geminiHome, '.gemini', 'gemini-credentials.json'), '{}');
+    await gsessions.prompt(row.id, 'hello again');
+    await waitFor(() => gdb.getSession(row.id)?.status === 'idle', 'turn with Google login', 10_000);
+    const said = gdb.eventsAfter(row.id, 0).map((e) => JSON.stringify(e.data)).join('\n');
+    assert.match(said, /hello again/);
+    assert.match(said, /apikey=unset/, 'the API key is not passed to the agent in Google login mode');
+  } finally {
+    gsessions.shutdown();
+  }
 });

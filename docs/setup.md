@@ -58,11 +58,11 @@ gemini --version
 
 > nvm で入れた Node は systemd から見えません。上の手順のように `/usr/bin/node` に入れてください。
 
-## 5. Gemini API キーと GitHub トークンを用意する
+## 5. Gemini の認証方法を決め、GitHub トークンを用意する
 
-**Gemini API キー**
-1. https://aistudio.google.com/apikey で「API キーを作成」。
-2. 課金を有効にする場合は、Google Cloud コンソールの **お支払い → 予算とアラート** で月の上限アラートを設定しておきます。
+**Gemini の認証（どちらか）**
+- **Google アカウントでログイン（おすすめ）**: Google AI Pro / Ultra を契約していれば、その利用枠（1 日 1,500 回程度）が使われ、追加料金はかかりません。env に `GEMINICODE_AUTH=google` と書き、手順 9 のあとで `./deploy/login-google.sh` を実行してログインします。
+- **API キー**: env に `GEMINICODE_AUTH=api-key` と `GEMINI_API_KEY` を書きます。キーは https://aistudio.google.com/apikey で作成します。Pro 契約の枠はキーには付かず、課金を有効にしていないキーは無料枠（1 日 250 回程度・Flash のみ）です。Gemini CLI は 1 回の指示で何度も API を呼ぶので、すぐ上限に達します。課金を有効にする場合は、Google Cloud コンソールの **お支払い → 予算とアラート** で上限アラートを設定してください。
 
 **GitHub fine-grained personal access token**
 1. GitHub → Settings → Developer settings → **Fine-grained tokens** → Generate new token。
@@ -127,6 +127,22 @@ journalctl -u geminicode -f  # ログを見る（Ctrl+C で抜ける）
 
 `Server listening at http://127.0.0.1:8080` と出れば OK です。
 
+**Google アカウントでログインする場合（`GEMINICODE_AUTH=google`）**
+
+サービスを動かすユーザー（`root` ではない普段のユーザー）で実行します。
+
+```bash
+cd ~/GeminiCode
+./deploy/login-google.sh
+```
+
+1. 表示される URL を PC のブラウザで開き、Pro を契約している Google アカウントでログインする
+2. 画面に出た認証コードを WSL に貼り付けて Enter
+3. Gemini CLI の入力欄が出たら `/quit` で終了
+4. `sudo systemctl restart geminicode`
+
+ログイン情報は GeminiCode 専用のフォルダに保存され、普段使う `gemini` のログインとは別です。数か月使わなかったり、Google アカウント側でアクセスを取り消したりすると、再ログインが必要になります。そのときは画面のエラーに案内が出るので、同じ手順をやり直してください。
+
 ## 10. WSL を止まらないようにする（Windows 側）
 
 WSL は、Windows 側から使われていないと数十秒〜数分で止まります。ログオン時に裏で WSL を動かし続けるタスクを登録します。
@@ -176,6 +192,8 @@ powershell -ExecutionPolicy Bypass -File \\wsl$\Ubuntu\home\<WSLのユーザー�
 | `forbidden` | `ALLOWED_EMAILS` にログインしたメールアドレスが入っているか |
 | リポジトリ一覧が空 / `GitHub API ... 401` | `GITHUB_TOKEN` の有効期限と、対象リポジトリが選ばれているか |
 | `API key not valid` | `GEMINI_API_KEY` |
+| 「Google アカウントでのログインが済んでいません」 | `./deploy/login-google.sh` を実行してから `sudo systemctl restart geminicode` |
+| 「daily quota」「上限に達しました」 | API キーの無料枠を使い切っています。`GEMINICODE_AUTH=google` に切り替えると Pro 契約の枠が使えます |
 | 「リトライしています」と出たまま進まない | Gemini API が混雑（503）または上限（429）です。■ で停止し、入力欄の左上のボタンでモデルを Flash 系に切り替えてから送り直してください。停止して 5 秒たっても終わらないときは、Gemini CLI を終了させて止めます |
 | 「考えています…」のまま進まない | `journalctl -u geminicode -n 40` に `[session …] initialized` と `ACP session … ready` が出ているか。出ていなければ、Gemini CLI の起動で止まっています。2 分で時間切れのエラーになり、そのとき Gemini CLI の出力が画面に表示されます |
 | セッションがエラーになる | 画面のエラー表示と、`~/.local/share/geminicode/logs/<セッションID>.log`（Gemini CLI の stderr） |
@@ -185,7 +203,7 @@ powershell -ExecutionPolicy Bypass -File \\wsl$\Ubuntu\home\<WSLのユーザー�
 ## Gemini CLI の設定について
 
 GeminiCode から起動する Gemini CLI は、`~/.local/share/geminicode/gemini-home/.gemini/` を設定フォルダとして使います。WSL で対話的に使う `gemini` の `~/.gemini` とは別です。
-- 理由: 対話で「Google でログイン」を選んだ設定が残っていると、Gemini CLI はブラウザでのログインを待って止まってしまうためです。専用フォルダでは常に API キーで認証します。
+- 理由: 普段使う設定に何が選ばれていても影響を受けないようにするためです。例えば「Google でログイン」を選んだままログインしていないと、Gemini CLI はブラウザでのログインを待って止まってしまいます。専用フォルダでは、認証方法を env の `GEMINICODE_AUTH` どおりに固定します。
 - `~/.gemini/GEMINI.md`（全体のメモリ）や、`~/.gemini` に設定した MCP サーバー・拡張機能は使われません。必要なものは専用フォルダ側に置いてください。リポジトリ内の `GEMINI.md` はこれまでどおり読まれます。
 
 ## セキュリティ上の注意
