@@ -15,7 +15,8 @@ test('Cloudflare Access JWT verification', async () => {
     cfAccessAud: 'aud-123',
     allowedEmails: ['me@example.com'],
   };
-  const app = Fastify();
+  const logs: string[] = [];
+  const app = Fastify({ logger: { level: 'warn', stream: { write: (l: string) => logs.push(l) } } });
   const auth = createAuth(cfg, createLocalJWKSet({ keys: [jwk] }));
   app.addHook('onRequest', auth);
   app.get('/', async (req) => ({ email: (req as { userEmail?: string }).userEmail }));
@@ -39,6 +40,7 @@ test('Cloudflare Access JWT verification', async () => {
   assert.equal(ok.body.email, 'me@example.com');
   assert.equal((await get({ cookie: `CF_Authorization=${await sign({})}` })).status, 200);
   assert.equal((await get({ 'cf-access-jwt-assertion': await sign({ aud: 'other' }) })).status, 401);
+  assert.ok(logs.some((l) => JSON.parse(l).aud === 'other'), 'logs the audience of a validly signed token');
   assert.equal((await get({ 'cf-access-jwt-assertion': await sign({ iss: 'https://evil.example' }) })).status, 401);
   assert.equal((await get({ 'cf-access-jwt-assertion': await sign({ email: 'someone@example.com' }) })).status, 403);
   await app.close();

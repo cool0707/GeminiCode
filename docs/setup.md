@@ -94,20 +94,28 @@ env の項目は `deploy/env.example` のコメントを参照してください
 3. 「Choose your environment」で **Debian**・**64-bit** を選び、表示されるコマンドを WSL で実行する。
    - 上の枠: cloudflared のインストール
    - 下の枠: `sudo cloudflared service install <トークン>`（systemd サービスとして登録されます）
-4. ダッシュボードに Connector が **Connected** と出たら Next。
-5. **Public Hostname** を追加する:
-   - Subdomain: `gemini` / Domain: `example.com`
-   - Service: Type **HTTP**、URL **localhost:8080**
-6. Save。
+4. トンネルの Overview で Status が **Healthy**、Replicas に自分の PC が出ていれば接続できています。
+5. 公開するホスト名を追加する（旧画面の「Public Hostname」は、新しい画面では **Routes** になりました）:
+   - トンネルの Overview にある **Add route**（または上部の **Routes** タブ → Add route）を押す。
+   - 種類は **Published application** を選ぶ。
+   - Hostname: Subdomain `gemini`、Domain `example.com`（ドロップダウンから選ぶ）
+   - Service URL: `http://localhost:8080`
+6. **Add route** で保存する。`gemini.example.com` の DNS レコードは自動で作られます。
 
 ## 8. Cloudflare Access でアクセスを自分だけに絞る
 
-1. Zero Trust → **Access → Applications → Add an application → Self-hosted**。
-2. Application name: `GeminiCode`、Session Duration: **1 month**（スマホで何度もログインしなくて済むように）。
-3. Application domain: `gemini.example.com`。
-4. Policy を追加: Action **Allow**、Include → **Emails** → 自分のメールアドレス。
-5. ログイン方法は既定の **One-time PIN**（メールに届くコードでログイン）で十分です。Google ログインにしたい場合は Settings → Authentication で Google を追加します。
-6. 保存後、アプリの **Overview** に出る **Application Audience (AUD) Tag** をコピーし、`/etc/geminicode/env` の `CF_ACCESS_AUD` に貼る。`CF_ACCESS_TEAM_DOMAIN` には `myteam.cloudflareaccess.com` を入れる。`ALLOWED_EMAILS` にも同じメールアドレスを入れる。
+1. Zero Trust → **Access controls → Applications → Add an application → Self-hosted**。
+2. Destination（Application domain）: `gemini.example.com`。
+3. Policy を追加: Action **Allow**、Include → **Emails** → 自分のメールアドレス。ポリシー側の Session duration は「Same as application session timeout」のままにする（ポリシー側で値を入れると、アプリ側の設定より優先されます）。
+4. **Authentication**:
+   - Accept all available identity providers: オンのまま。2026 年 6 月以降に作った Zero Trust 組織では、ログイン方法の既定が **Cloudflare**（Cloudflare アカウントでログイン）だけになっています。これで問題ありません。ポリシーのメールアドレスを Cloudflare アカウントのメールアドレスと同じにしてください。Cloudflare アカウントの 2 段階認証も有効にしておくと安心です。
+     - メールに届くコードでログインしたい場合は、Zero Trust → **Integrations → Identity providers** で **One-time PIN** を追加します。
+   - Apply instant authentication: **オン**（ログイン方法が 1 つだけのとき、ログイン方法の選択画面を飛ばします）。
+   - Authenticate with Cloudflare One Client: オフのまま。
+5. **Details**: Name は任意（例: `GeminiCode`）、Session Duration は **1 month**（スマホで何度もログインしなくて済むように）。
+6. **Create** で保存する。
+7. 作成したアプリを開き、**Application Audience (AUD) Tag**（64 文字の英数字）をコピーし、`/etc/geminicode/env` の `CF_ACCESS_AUD` に貼る。
+   - 画面上で見つからない場合は、ゲートウェイのログから取得できます。まず `CF_ACCESS_AUD=unknown` のまま手順 9 まで進めて起動し、ブラウザで `https://gemini.example.com` にログインします。画面には `invalid Cloudflare Access token` と出ますが、`journalctl -u geminicode -n 20` に `"aud":["…"]` が記録されているので、その値を `CF_ACCESS_AUD` に入れて `sudo systemctl restart geminicode` します（署名の検証に通ったトークンの値だけを記録するので、そのまま信用して構いません）。`CF_ACCESS_TEAM_DOMAIN` には `myteam.cloudflareaccess.com` を入れる。`ALLOWED_EMAILS` にも同じメールアドレスを入れる。
 
 ## 9. サービスを起動する（WSL 内）
 
