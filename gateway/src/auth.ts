@@ -1,6 +1,6 @@
 // Cloudflare Access sits in front of the tunnel; we still verify its JWT so that
 // nothing reaching the port directly (or through a misconfigured route) gets in.
-import { createRemoteJWKSet, jwtVerify, type JWTVerifyGetKey } from 'jose';
+import { createRemoteJWKSet, decodeJwt, errors, jwtVerify, type JWTVerifyGetKey } from 'jose';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import type { Config } from './config.js';
 
@@ -23,7 +23,12 @@ export function createAuth(cfg: Config, keys?: JWTVerifyGetKey) {
         return reply.code(403).send({ error: 'forbidden' });
       }
       (req as AuthedRequest).userEmail = email;
-    } catch {
+    } catch (err) {
+      // Claims are checked only after the signature, so this token really came from our team.
+      // Logging its audience lets the operator copy the AUD tag without hunting for it in the dashboard.
+      if (err instanceof errors.JWTClaimValidationFailed && err.claim === 'aud') {
+        req.log.warn({ aud: decodeJwt(token).aud }, 'Access token audience does not match CF_ACCESS_AUD; set CF_ACCESS_AUD to the aud shown here');
+      }
       return reply.code(401).send({ error: 'invalid Cloudflare Access token' });
     }
   };

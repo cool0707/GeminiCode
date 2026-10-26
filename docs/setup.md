@@ -114,7 +114,8 @@ env の項目は `deploy/env.example` のコメントを参照してください
    - Authenticate with Cloudflare One Client: オフのまま。
 5. **Details**: Name は任意（例: `GeminiCode`）、Session Duration は **1 month**（スマホで何度もログインしなくて済むように）。
 6. **Create** で保存する。
-7. 作成したアプリを開き、Overview（または Basic information）に出る **Application Audience (AUD) Tag** をコピーし、`/etc/geminicode/env` の `CF_ACCESS_AUD` に貼る。`CF_ACCESS_TEAM_DOMAIN` には `myteam.cloudflareaccess.com` を入れる。`ALLOWED_EMAILS` にも同じメールアドレスを入れる。
+7. 作成したアプリを開き、**Application Audience (AUD) Tag**（64 文字の英数字）をコピーし、`/etc/geminicode/env` の `CF_ACCESS_AUD` に貼る。
+   - 画面上で見つからない場合は、ゲートウェイのログから取得できます。まず `CF_ACCESS_AUD=unknown` のまま手順 9 まで進めて起動し、ブラウザで `https://gemini.example.com` にログインします。画面には `invalid Cloudflare Access token` と出ますが、`journalctl -u geminicode -n 20` に `"aud":["…"]` が記録されているので、その値を `CF_ACCESS_AUD` に入れて `sudo systemctl restart geminicode` します（署名の検証に通ったトークンの値だけを記録するので、そのまま信用して構いません）。`CF_ACCESS_TEAM_DOMAIN` には `myteam.cloudflareaccess.com` を入れる。`ALLOWED_EMAILS` にも同じメールアドレスを入れる。
 
 ## 9. サービスを起動する（WSL 内）
 
