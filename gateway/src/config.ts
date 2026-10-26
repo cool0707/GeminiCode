@@ -21,6 +21,7 @@ export interface Config {
   idleTimeoutMs: number;
   startupTimeoutMs: number;
   geminiHome: string;
+  defaultModel: string;
   dailyTokenLimit: number;
 }
 
@@ -52,6 +53,7 @@ export function loadConfig(): Config {
     // Gemini CLI gets its own home so a login method chosen in interactive use
     // (e.g. "Log in with Google", which waits for a browser) never applies here.
     geminiHome: env('GEMINICODE_GEMINI_HOME', path.join(dataDir, 'gemini-home')),
+    defaultModel: env('GEMINICODE_DEFAULT_MODEL', 'auto'),
     dailyTokenLimit: Number(env('GEMINICODE_DAILY_TOKEN_LIMIT', '0')),
   };
   return cfg;

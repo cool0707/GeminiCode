@@ -162,6 +162,7 @@ powershell -ExecutionPolicy Bypass -File \\wsl$\Ubuntu\home\<WSLのユーザー�
   - 編集は自動: ファイル編集は自動で許可し、コマンド実行だけ確認します。
   - すべて自動: 確認しません（YOLO）。
   - 計画のみ: 読み取り専用で計画を立てます。
+- **モデル**: 新規作成の画面と、入力欄の左上のボタンで選べます。「Auto」は Pro 系を選ぶことが多く、混雑時は応答が遅れます。止まったら停止して Flash 系に切り替え、送り直してください。
 - **⋯ メニュー**: 差分を見る / コミットして push / PR を作成 / Gemini CLI を終了 / セッションを削除。
 - ブラウザを閉じても処理は続きます。開き直すと、そこまでの経過がすべて表示されます。
 - 指示が無いまま 30 分たつと Gemini CLI のプロセスを止めてメモリを空けます。次に指示を送ると、会話を引き継いだ状態で自動的に再開します。
@@ -175,6 +176,7 @@ powershell -ExecutionPolicy Bypass -File \\wsl$\Ubuntu\home\<WSLのユーザー�
 | `forbidden` | `ALLOWED_EMAILS` にログインしたメールアドレスが入っているか |
 | リポジトリ一覧が空 / `GitHub API ... 401` | `GITHUB_TOKEN` の有効期限と、対象リポジトリが選ばれているか |
 | `API key not valid` | `GEMINI_API_KEY` |
+| 「リトライしています」と出たまま進まない | Gemini API が混雑（503）または上限（429）です。■ で停止し、入力欄の左上のボタンでモデルを Flash 系に切り替えてから送り直してください。停止して 5 秒たっても終わらないときは、Gemini CLI を終了させて止めます |
 | 「考えています…」のまま進まない | `journalctl -u geminicode -n 40` に `[session …] initialized` と `ACP session … ready` が出ているか。出ていなければ、Gemini CLI の起動で止まっています。2 分で時間切れのエラーになり、そのとき Gemini CLI の出力が画面に表示されます |
 | セッションがエラーになる | 画面のエラー表示と、`~/.local/share/geminicode/logs/<セッションID>.log`（Gemini CLI の stderr） |
 

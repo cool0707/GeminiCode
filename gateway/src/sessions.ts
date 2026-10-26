@@ -30,6 +30,17 @@ interface LiveAgent {
   models: { modelId: string; name: string }[];
   /** Set once we have already reported this agent as failed, so the exit handler stays quiet. */
   failed: boolean;
+  /** Highest API retry attempt already shown for the current turn. */
+  retryShown: number;
+  /** The user pressed stop; if the agent ignores session/cancel we kill it. */
+  cancelling: boolean;
+  stopWatchingDebugLog: () => void;
+}
+
+export interface ModelInfo {
+  modelId: string;
+  name: string;
+  description?: string;
 }
 
 export interface CreateSessionInput {
@@ -45,10 +56,14 @@ export interface SessionManagerEvents {
   session: [SessionRow];
 }
 
+const CANCEL_GRACE_MS = 5000;
+
 const ACTIVE: SessionStatus[] = ['starting', 'idle', 'running', 'waiting'];
 
 export class SessionManager extends EventEmitter<SessionManagerEvents> {
   private agents = new Map<string, LiveAgent>();
+  private modelCache: ModelInfo[] | null = null;
+  private modelProbe: Promise<ModelInfo[]> | null = null;
   readonly gh: GitHub;
 
   constructor(private cfg: Config, private db: Db) {
@@ -158,7 +173,7 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
       acp_session_id: null,
       status: 'starting',
       mode: input.mode || 'default',
-      model: input.model || 'auto',
+      model: input.model || this.cfg.defaultModel,
       pr_url: null,
       error: null,
       created_at: now,
@@ -206,12 +221,13 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
     return { today: this.db.usageToday(), limit: this.cfg.dailyTokenLimit };
   }
 
-  private agentEnv(): NodeJS.ProcessEnv {
+  private agentEnv(debugLogFile?: string): NodeJS.ProcessEnv {
     const env: NodeJS.ProcessEnv = {
       ...process.env,
       GEMINI_API_KEY: this.cfg.geminiApiKey,
       GEMINI_CLI_HOME: this.cfg.geminiHome,
     };
+    if (debugLogFile) env.GEMINI_DEBUG_LOG_FILE = debugLogFile;
     // The agent runs shell commands on the model's behalf: keep gateway secrets out of its reach.
     for (const k of ['GITHUB_TOKEN', 'CF_ACCESS_AUD', 'CF_ACCESS_TEAM_DOMAIN']) delete env[k];
     return env;
@@ -222,9 +238,10 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
     if (existing && !existing.client.exited) return existing;
 
     const row = this.get(id);
+    const debugLog = path.join(this.cfg.dataDir, 'logs', `${id}.debug.log`);
     const client = new AcpClient(this.cfg.geminiBin, ['--acp', '--skip-trust', ...this.cfg.geminiArgs], {
       cwd: row.workdir,
-      env: this.agentEnv(),
+      env: this.agentEnv(debugLog),
     });
     this.log(id, `starting ${this.cfg.geminiBin} --acp in ${row.workdir}`);
     const log = fs.createWriteStream(path.join(this.cfg.dataDir, 'logs', `${id}.log`), { flags: 'a' });
@@ -232,6 +249,7 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
     client.on('stderr', (s) => {
       log.write(s);
       stderrTail = (stderrTail + s).slice(-2000);
+      this.noticeRetries(id, live, s);
     });
 
     const live: LiveAgent = {
@@ -244,6 +262,9 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
       models: [],
       ready: Promise.resolve(),
       failed: false,
+      retryShown: 0,
+      cancelling: false,
+      stopWatchingDebugLog: watchAppended(debugLog, (text) => this.noticeRetries(id, live, text)),
     };
 
     client.on('update', ({ update }) => {
@@ -264,6 +285,7 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
 
     client.on('exit', (code) => {
       log.end();
+      live.stopWatchingDebugLog();
       this.log(id, `agent exited (code ${code})`);
       clearTimeout(live.idleTimer);
       for (const p of live.permissions.values()) {
@@ -273,7 +295,10 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
       if (this.agents.get(id) === live) this.agents.delete(id);
       const current = this.db.getSession(id);
       if (!current) return;
-      if (live.busy && !live.failed) {
+      if (live.busy && live.cancelling) {
+        this.append(id, 'turn_end', { stopReason: 'cancelled', usage: null });
+        this.setStatus(id, 'stopped');
+      } else if (live.busy && !live.failed) {
         this.fail(id, new Error(`Gemini CLI が異常終了しました (code ${code})\n${stderrTail.trim()}`));
       } else if (ACTIVE.includes(current.status)) {
         this.setStatus(id, 'stopped');
@@ -284,14 +309,25 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
       const init = await client.initialize();
       this.log(id, 'initialized');
       let modes, models;
+      let resumed = false;
       if (row.acp_session_id && init.agentCapabilities?.loadSession) {
         live.loading = true;
         try {
           ({ modes, models } = await client.loadSession(row.acp_session_id, row.workdir));
+          resumed = true;
+        } catch (err) {
+          // Gemini CLI saves a conversation only once a turn completes, so a session stopped
+          // during its first turn cannot be loaded. Carry on in a fresh agent conversation.
+          this.log(id, `session/load failed: ${(err as Error).message}`);
+          this.append(id, 'system', {
+            level: 'warn',
+            text: 'Gemini CLI に前回の会話を読み込めなかったため、新しい会話として続けます（この画面の履歴は残ります）。',
+          });
         } finally {
           live.loading = false;
         }
-      } else {
+      }
+      if (!resumed) {
         const res = await client.newSession(row.workdir);
         live.acpSessionId = res.sessionId;
         ({ modes, models } = res);
@@ -300,6 +336,7 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
       this.log(id, `ACP session ${live.acpSessionId} ready`);
       live.modes = modes?.availableModes ?? [];
       live.models = models?.availableModels ?? [];
+      if (live.models.length) this.rememberModels(live.models);
       if (modes && row.mode && modes.currentModeId !== row.mode) await client.setMode(live.acpSessionId, row.mode);
       if (models && row.model && models.currentModelId !== row.model) {
         await client.setModel(live.acpSessionId, row.model).catch((err: Error) => {
@@ -322,7 +359,15 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
         );
       }, this.cfg.startupTimeoutMs);
     });
-    live.ready = Promise.race([startup, timeout]).finally(() => clearTimeout(timer));
+    live.ready = Promise.race([startup, timeout])
+      .catch((err) => {
+        // Never keep a half-started agent: the next prompt should start a fresh one.
+        live.failed = true;
+        client.kill();
+        if (this.agents.get(id) === live) this.agents.delete(id);
+        throw err;
+      })
+      .finally(() => clearTimeout(timer));
     // Avoid an unhandled rejection when nobody is awaiting yet; runTurn awaits live.ready.
     live.ready.catch(() => {});
     this.agents.set(id, live);
@@ -340,6 +385,8 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
   private async runTurn(id: string, text: string): Promise<void> {
     const live = this.ensureAgent(id);
     live.busy = true;
+    live.retryShown = 0;
+    live.cancelling = false;
     clearTimeout(live.idleTimer);
     this.setStatus(id, 'running', { error: null });
     try {
@@ -353,6 +400,8 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
       this.scheduleIdleStop(id, live);
     } catch (err) {
       live.busy = false;
+      // A stop that needed a kill is reported by the exit handler, not as an error.
+      if (live.cancelling && live.client.exited) return;
       if (!live.client.exited) this.scheduleIdleStop(id, live);
       throw err;
     }
@@ -384,8 +433,19 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
     const live = this.agents.get(id);
     if (!live?.busy) return;
     for (const p of [...live.permissions.values()]) this.respondPermission(id, p.requestId, null);
+    live.cancelling = true;
     live.client.cancel(live.acpSessionId);
     this.append(id, 'system', { level: 'info', text: '停止を要求しました。' });
+    // Gemini CLI does not abort its API retry loop on session/cancel; end the process instead.
+    setTimeout(() => {
+      if (live.busy && live.cancelling && !live.client.exited) {
+        this.append(id, 'system', {
+          level: 'info',
+          text: 'Gemini CLI が応答しないため終了しました。続けて指示を送ると、会話を引き継いで再開します。',
+        });
+        live.client.kill();
+      }
+    }, CANCEL_GRACE_MS);
   }
 
   async setMode(id: string, modeId: string): Promise<void> {
@@ -399,6 +459,84 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
     this.emit('session', this.get(id));
   }
 
+  async setModel(id: string, modelId: string): Promise<void> {
+    this.get(id);
+    if (!modelId) throw new HttpError(400, 'modelId is required');
+    this.db.updateSession(id, { model: modelId });
+    const live = this.agents.get(id);
+    if (live && !live.client.exited) {
+      await live.ready;
+      await live.client.setModel(live.acpSessionId, modelId);
+    }
+    this.emit('session', this.get(id));
+  }
+
+  /** API errors make Gemini CLI retry silently for minutes; show each attempt in the session. */
+  private noticeRetries(id: string, live: LiveAgent, text: string): void {
+    if (!live.busy) return;
+    for (const m of text.matchAll(/Attempt (\d+) failed(?: with status (\d+)| with (\d+) error| with (5xx) error)?/g)) {
+      const attempt = Number(m[1]);
+      if (attempt <= live.retryShown) continue;
+      live.retryShown = attempt;
+      const status = m[2] ?? m[3] ?? m[4] ?? '';
+      const reason =
+        status === '429'
+          ? 'API の利用上限に達しています（429）'
+          : status.startsWith('5')
+            ? `モデルが混雑しているか障害が起きています（${status}）`
+            : 'API の呼び出しに失敗しました';
+      this.append(id, 'system', {
+        level: 'warn',
+        retry: attempt,
+        text: `${reason}。リトライしています（${attempt} 回目）… 長引く場合は停止して、別のモデルに切り替えてから送り直してください。`,
+      });
+    }
+  }
+
+  private rememberModels(models: ModelInfo[]): void {
+    this.modelCache = models;
+    try {
+      fs.writeFileSync(path.join(this.cfg.dataDir, 'models.json'), JSON.stringify(models));
+    } catch {
+      // Only a cache.
+    }
+  }
+
+  /** Models Gemini CLI offers, cached from the last session (or a short-lived probe on first use). */
+  async models(): Promise<{ models: ModelInfo[]; default: string }> {
+    if (!this.modelCache) {
+      try {
+        this.modelCache = JSON.parse(fs.readFileSync(path.join(this.cfg.dataDir, 'models.json'), 'utf8'));
+      } catch {
+        this.modelProbe ??= this.probeModels().finally(() => (this.modelProbe = null));
+        this.modelCache = await this.modelProbe.catch(() => null);
+      }
+    }
+    const models = this.modelCache?.length ? this.modelCache : [{ modelId: 'auto', name: 'Auto' }];
+    return { models, default: this.cfg.defaultModel };
+  }
+
+  /** session/new does not call the model API, so this costs no tokens. */
+  private async probeModels(): Promise<ModelInfo[]> {
+    const dir = path.join(this.cfg.dataDir, 'probe');
+    fs.mkdirSync(dir, { recursive: true });
+    const client = new AcpClient(this.cfg.geminiBin, ['--acp', '--skip-trust', ...this.cfg.geminiArgs], {
+      cwd: dir,
+      env: this.agentEnv(),
+    });
+    const timer = setTimeout(() => client.kill(), this.cfg.startupTimeoutMs);
+    try {
+      await client.initialize();
+      const res = await client.newSession(dir);
+      const models = res.models?.availableModels ?? [];
+      if (models.length) this.rememberModels(models);
+      return models;
+    } finally {
+      clearTimeout(timer);
+      client.kill();
+    }
+  }
+
   stop(id: string): void {
     this.agents.get(id)?.client.kill();
   }
@@ -409,7 +547,7 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
     if (live && !live.client.exited) {
       const exited = new Promise((r) => live.client.once('exit', r));
       live.client.kill();
-      await exited;
+      await Promise.race([exited, new Promise((r) => setTimeout(r, 10_000))]);
     }
     await fs.promises.rm(row.workdir, { recursive: true, force: true });
     this.db.deleteSession(id);
@@ -480,4 +618,29 @@ export function readableError(message: string): string {
 function stripAnsi(text: string): string {
   // eslint-disable-next-line no-control-regex
   return text.replace(/\x1b\[[0-9;?<>=]*[ -/]*[@-~]/g, '').replace(/\x1b[()][0-9A-Za-z]/g, '');
+}
+
+/** Calls onText with whatever gets appended to a file (which may not exist yet). Returns a stop function. */
+function watchAppended(file: string, onText: (text: string) => void): () => void {
+  let offset = 0;
+  try {
+    offset = fs.statSync(file).size;
+  } catch {
+    // Not created yet: read from the start once it appears.
+  }
+  const listener = (cur: fs.Stats) => {
+    if (cur.size < offset) offset = 0;
+    if (cur.size === offset) return;
+    const fd = fs.openSync(file, 'r');
+    try {
+      const buf = Buffer.alloc(cur.size - offset);
+      fs.readSync(fd, buf, 0, buf.length, offset);
+      offset = cur.size;
+      onText(buf.toString('utf8'));
+    } finally {
+      fs.closeSync(fd);
+    }
+  };
+  fs.watchFile(file, { interval: 1000 }, listener);
+  return () => fs.unwatchFile(file, listener);
 }

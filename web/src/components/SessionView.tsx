@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { api, subscribe, type SessionInfo } from '../api';
+import { api, subscribe, type ModelInfo, type SessionInfo } from '../api';
 import { navigate } from '../App';
 import { applyEvent, emptyTimeline, pendingPermission, type Item, type PermissionItem } from '../timeline';
 import { formatTokens, modeLabel, statusLabel } from '../util';
 import { Markdown } from './Markdown';
 import { ToolCard, ToolContentView } from './ToolCard';
+import { ModelPicker } from './ModelPicker';
 
 const outcomeLabel: Record<string, string> = { cancelled: '拒否しました', expired: '期限切れ' };
 
@@ -26,10 +27,15 @@ export function SessionView({ id }: { id: string }) {
   const [connected, setConnected] = useState(true);
   const [error, setError] = useState('');
   const [menuOpen, setMenuOpen] = useState(false);
+  const [knownModels, setKnownModels] = useState<ModelInfo[]>([]);
   const scrollRef = useRef<HTMLDivElement>(null);
   const stickToBottom = useRef(true);
 
   const refresh = useCallback(() => api.session(id).then(setSession, (e) => setError(e.message)), [id]);
+
+  useEffect(() => {
+    api.models().then((m) => setKnownModels(m.models), () => {});
+  }, []);
 
   useEffect(() => {
     refresh();
@@ -123,6 +129,11 @@ export function SessionView({ id }: { id: string }) {
             onMode={(m) => run(async () => {
               await api.setMode(id, m);
               setSession((s) => (s ? { ...s, mode: m } : s));
+            })}
+            models={session.models.length ? session.models : knownModels}
+            onModel={(m) => run(async () => {
+              await api.setModel(id, m);
+              setSession((s) => (s ? { ...s, model: m } : s));
             })}
           />
         )
@@ -238,6 +249,8 @@ function Composer(props: {
   onSend: (text: string) => Promise<boolean>;
   onCancel: () => void;
   onMode: (mode: string) => void;
+  models: ModelInfo[];
+  onModel: (modelId: string) => void;
 }) {
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
@@ -269,6 +282,7 @@ function Composer(props: {
         <button className="chip" onClick={() => props.onMode(nextMode)} title="承認モードを切り替え">
           {modeLabel[props.session.mode] ?? props.session.mode}
         </button>
+        <ModelPicker className="chip" value={props.session.model} models={props.models} onChange={props.onModel} />
         {props.usage && props.usage.size > 0 && (
           <span className="muted small">文脈 {Math.round((props.usage.used / props.usage.size) * 100)}%</span>
         )}

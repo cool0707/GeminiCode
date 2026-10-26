@@ -81,6 +81,7 @@ before(async () => {
     idleTimeoutMs: 0,
     startupTimeoutMs: 3000,
     geminiHome: path.join(tmp, 'gemini-home'),
+    defaultModel: 'auto',
     dailyTokenLimit: 0,
   };
   fs.mkdirSync(cfg.dataDir, { recursive: true });
@@ -105,6 +106,20 @@ async function api(method: string, url: string, body?: unknown) {
   return { status: res.statusCode, json: res.json() };
 }
 
+/** Number of live processes whose working directory is dir (Linux /proc). */
+function processesIn(dir: string): number {
+  let n = 0;
+  for (const pid of fs.readdirSync('/proc')) {
+    if (!/^\d+$/.test(pid)) continue;
+    try {
+      if (fs.readlinkSync(`/proc/${pid}/cwd`) === dir) n++;
+    } catch {
+      // Process exited or not ours.
+    }
+  }
+  return n;
+}
+
 async function waitFor<T>(fn: () => T | undefined | false, label: string, ms = 10_000): Promise<T> {
   const start = Date.now();
   while (Date.now() - start < ms) {
@@ -127,6 +142,14 @@ test('lists repositories through the GitHub API', async () => {
   assert.equal(json[0].defaultBranch, 'main');
 });
 
+test('lists models by probing Gemini CLI once', async () => {
+  const { status, json } = await api('GET', '/api/models');
+  assert.equal(status, 200);
+  assert.equal(json.default, 'auto');
+  assert.deepEqual(json.models.map((m: any) => m.modelId), ['auto', 'gemini-3-flash-preview']);
+  assert.ok(fs.existsSync(path.join(tmp, 'data', 'models.json')), 'cached for next time');
+});
+
 test('full session: clone, permission, diff, PR, resume', async () => {
   const created = await api('POST', '/api/sessions', { repo: 'owner/repo', prompt: 'please edit a file' });
   assert.equal(created.status, 200, JSON.stringify(created.json));
@@ -145,7 +168,7 @@ test('full session: clone, permission, diff, PR, resume', async () => {
   await waitFor(() => db.getSession(id)?.status === 'idle', 'idle after first turn');
 
   const kinds = db.eventsAfter(id, 0).map((e) => e.kind);
-  assert.deepEqual(kinds.filter((k) => k !== 'system'), ['user', 'update', 'permission', 'permission_resolved', 'update', 'update', 'update', 'update', 'update', 'turn_end']);
+  assert.deepEqual(kinds.filter((k) => k !== 'system'), ['user', 'update', 'permission', 'permission_resolved', 'update', 'update', 'update', 'update', 'update', 'update', 'turn_end']);
 
   const diff = await api('GET', `/api/sessions/${id}/diff`);
   assert.deepEqual(diff.json.files, [{ path: 'hello.txt', added: 1, removed: 0 }]);
@@ -162,9 +185,9 @@ test('full session: clone, permission, diff, PR, resume', async () => {
   // without duplicating the replayed history into our log.
   await api('POST', `/api/sessions/${id}/stop`);
   await waitFor(() => db.getSession(id)?.status === 'stopped', 'stopped');
-  const before = db.eventsAfter(id, 0).length;
+  const before = db.eventsAfter(id, 0).at(-1)!.seq;
   assert.equal((await api('POST', `/api/sessions/${id}/prompt`, { text: 'hi again' })).status, 200);
-  await waitFor(() => db.eventsAfter(id, 0).some((e) => e.kind === 'turn_end' && e.seq > before + 1), 'second turn');
+  await waitFor(() => db.eventsAfter(id, before).some((e) => e.kind === 'turn_end'), 'second turn');
   const texts = db.eventsAfter(id, before).map((e) => JSON.stringify(e.data));
   assert.ok(!texts.some((t) => t.includes('replayed')));
   assert.ok(texts.some((t) => t.includes('hi again')));
@@ -231,4 +254,57 @@ test('a saved Google login does not hang the session forever', async () => {
   } finally {
     fs.writeFileSync(settings, original);
   }
+});
+
+test('chosen model is applied, retries are shown once each, and the model can be switched', async () => {
+  const created = await api('POST', '/api/sessions', {
+    repo: 'owner/repo',
+    prompt: 'busy model check',
+    model: 'gemini-3-flash-preview',
+  });
+  const id: string = created.json.id;
+  assert.equal(created.json.model, 'gemini-3-flash-preview');
+  await waitFor(() => db.getSession(id)?.status === 'idle', 'turn with retries', 15_000);
+  const texts = () => db.eventsAfter(id, 0).map((e) => JSON.stringify(e.data)).join('\n');
+  const retries = db.eventsAfter(id, 0).filter((e) => e.kind === 'system' && /リトライしています/.test((e.data as any).text));
+  assert.deepEqual(
+    retries.map((e) => (e.data as any).text.match(/（(\d+) 回目）/)[1]),
+    ['1', '2'],
+    'one notice per attempt even though both stderr and the debug log report it',
+  );
+  assert.match((retries[0].data as any).text, /混雑/);
+  assert.match(texts(), /model: gemini-3-flash-preview/);
+
+  assert.equal((await api('POST', `/api/sessions/${id}/model`, { modelId: 'auto' })).status, 200);
+  assert.equal(db.getSession(id)?.model, 'auto');
+  const before = db.eventsAfter(id, 0).at(-1)!.seq;
+  await api('POST', `/api/sessions/${id}/prompt`, { text: 'again' });
+  await waitFor(() => db.eventsAfter(id, before).some((e) => e.kind === 'turn_end'), 'second turn');
+  assert.match(db.eventsAfter(id, before).map((e) => JSON.stringify(e.data)).join('\n'), /model: auto/);
+});
+
+test('stop ends a turn the agent will not cancel, and the session resumes afterwards', async () => {
+  const created = await api('POST', '/api/sessions', { repo: 'owner/repo', prompt: 'hang forever' });
+  const id: string = created.json.id;
+  await waitFor(() => db.getSession(id)?.status === 'running' && db.eventsAfter(id, 0).length >= 3, 'running');
+  await new Promise((r) => setTimeout(r, 300));
+  await api('POST', `/api/sessions/${id}/cancel`);
+  await waitFor(() => db.getSession(id)?.status === 'stopped', 'stopped after grace period', 10_000);
+  const events = db.eventsAfter(id, 0);
+  assert.equal(db.getSession(id)?.error, null);
+  assert.ok(!events.some((e) => e.kind === 'system' && (e.data as any).level === 'error'), 'not reported as an error');
+  assert.equal((events.findLast((e) => e.kind === 'turn_end')!.data as any).stopReason, 'cancelled');
+
+  const workdir = db.getSession(id)!.workdir;
+  await waitFor(() => processesIn(workdir) === 0, 'agent and its relaunched child gone', 5000);
+
+  const before = events[events.length - 1].seq;
+  assert.equal((await api('POST', `/api/sessions/${id}/prompt`, { text: 'resume' })).status, 200);
+  await waitFor(() => db.eventsAfter(id, before).some((e) => e.kind === 'turn_end'), 'resumed turn');
+  assert.equal(db.getSession(id)?.status, 'idle');
+  // The first turn never completed, so the agent had nothing saved to load.
+  assert.ok(
+    db.eventsAfter(id, before).some((e) => e.kind === 'system' && /新しい会話として続けます/.test((e.data as any).text)),
+    'falls back to a new agent conversation',
+  );
 });

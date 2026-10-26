@@ -806,3 +806,57 @@ a {
   border-top: 1px solid var(--border);
   max-height: none;
 }
+
+/* ---------- model picker ---------- */
+
+.model-picker {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  cursor: pointer;
+}
+
+.model-picker::after {
+  content: '▾';
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.model-picker-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 46vw;
+}
+
+/* The real <select> covers the chip so a tap opens the phone's own picker. */
+.model-picker select {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  width: 100%;
+  font-size: 16px;
+  cursor: pointer;
+}
+
+.select-like {
+  display: flex;
+  justify-content: space-between;
+  width: 100%;
+  padding: 11px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+}
+
+.select-like .model-picker-label {
+  max-width: none;
+}
+
+.field .hint {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--muted);
+}

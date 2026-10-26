@@ -1,8 +1,23 @@
 // A stand-in for `gemini --acp` used by the tests: speaks just enough ACP.
 // Prompts containing "edit" request permission and then write hello.txt.
+import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline';
+
+// Like the real CLI, relaunch as a child process; the parent ignores SIGTERM while the child runs.
+if (!process.env.FAKE_AGENT_CHILD) {
+  const child = spawn(process.execPath, [import.meta.filename, ...process.argv.slice(2)], {
+    stdio: 'inherit',
+    env: { ...process.env, FAKE_AGENT_CHILD: '1' },
+  });
+  process.on('SIGTERM', () => {});
+  child.on('exit', (code) => process.exit(code ?? 1));
+} else {
+  runAgent();
+}
+
+function runAgent() {
 
 let cwd = process.cwd();
 let nextId = 1000;
@@ -24,7 +39,13 @@ const modes = {
   ],
   currentModeId: 'default',
 };
-const models = { availableModels: [{ modelId: 'auto', name: 'Auto' }], currentModelId: 'auto' };
+const models = {
+  availableModels: [
+    { modelId: 'auto', name: 'Auto' },
+    { modelId: 'gemini-3-flash-preview', name: 'gemini-3-flash-preview' },
+  ],
+  currentModelId: 'auto',
+};
 
 async function handle(msg: any): Promise<unknown> {
   const p = msg.params;
@@ -49,6 +70,8 @@ async function handle(msg: any): Promise<unknown> {
     }
     case 'session/load':
       cwd = p.cwd;
+      // Like the real CLI: nothing to load until a turn has completed and been saved.
+      if (!fs.existsSync(path.join(cwd, '.git', 'fake-saved'))) throw { code: -32603, message: 'Internal error' };
       update(p.sessionId, { sessionUpdate: 'user_message_chunk', content: { type: 'text', text: 'replayed' } });
       return { modes, models };
     case 'session/set_mode':
@@ -56,9 +79,20 @@ async function handle(msg: any): Promise<unknown> {
       update(p.sessionId, { sessionUpdate: 'current_mode_update', currentModeId: p.modeId });
       return {};
     case 'session/set_model':
+      models.currentModelId = p.modelId;
       return {};
     case 'session/prompt': {
       const text: string = p.prompt[0].text;
+      if (text.includes('hang')) return new Promise(() => {}); // ignores session/cancel, like a retry loop
+      if (text.includes('busy')) {
+        // Gemini CLI reports API retries through its debug logger: console.warn and GEMINI_DEBUG_LOG_FILE.
+        for (const attempt of [1, 2]) {
+          const line = `Attempt ${attempt} failed with status 503. Retrying with backoff... _ApiError: high demand\n`;
+          process.stderr.write(line);
+          if (process.env.GEMINI_DEBUG_LOG_FILE) fs.appendFileSync(process.env.GEMINI_DEBUG_LOG_FILE, `[ts] [WARN] ${line}`);
+          await new Promise((r) => setTimeout(r, 1300));
+        }
+      }
       if (text.includes('edit')) {
         const toolCall = {
           toolCallId: 't1',
@@ -86,9 +120,10 @@ async function handle(msg: any): Promise<unknown> {
         }
       }
       update(p.sessionId, { sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'Thinking about the request.' } });
-      for (const chunk of ['echo: ', text, '\n\n- `hello.txt` を作成\n- **完了**']) {
+      for (const chunk of ['echo: ', text, '\n\n- `hello.txt` を作成\n- **完了**', `\n\nmodel: ${models.currentModelId}`]) {
         update(p.sessionId, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: chunk } });
       }
+      fs.writeFileSync(path.join(cwd, '.git', 'fake-saved'), '');
       return { stopReason: 'end_turn', usage: { inputTokens: 7, outputTokens: 3, totalTokens: 10 } };
     }
     default:
@@ -109,3 +144,4 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
     (error) => send({ jsonrpc: '2.0', id: msg.id, error }),
   );
 });
+}

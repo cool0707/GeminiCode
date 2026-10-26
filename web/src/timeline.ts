@@ -34,7 +34,7 @@ export type Item =
   | { type: 'agent'; key: string; text: string }
   | { type: 'thought'; key: string; text: string }
   | { type: 'plan'; key: string; entries: { content: string; status: string; priority?: string }[] }
-  | { type: 'system'; key: string; level: string; text: string }
+  | { type: 'system'; key: string; level: string; text: string; retry?: number }
   | { type: 'turn_end'; key: string; stopReason: string; tokens: number | null }
   | ToolItem
   | PermissionItem;
@@ -60,7 +60,12 @@ export function applyEvent(tl: Timeline, e: EventRow): Timeline {
       items.push({ type: 'user', key, text: d.text, ts: e.ts });
       break;
     case 'system':
-      items.push({ type: 'system', key, level: d.level, text: d.text });
+      // Consecutive API retry notices collapse into one line showing the latest attempt.
+      if (d.retry && last?.type === 'system' && last.retry) {
+        items[items.length - 1] = { ...last, text: d.text, retry: d.retry };
+      } else {
+        items.push({ type: 'system', key, level: d.level, text: d.text, retry: d.retry });
+      }
       break;
     case 'turn_end':
       items.push({ type: 'turn_end', key, stopReason: d.stopReason, tokens: d.usage?.totalTokens ?? null });

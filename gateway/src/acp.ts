@@ -57,7 +57,9 @@ export class AcpClient extends EventEmitter<AcpClientEvents> {
 
   constructor(bin: string, args: string[], opts: { cwd: string; env: NodeJS.ProcessEnv }) {
     super();
-    this.proc = spawn(bin, args, { cwd: opts.cwd, env: opts.env, stdio: 'pipe' });
+    // Own process group: Gemini CLI relaunches itself as a child process and the parent
+    // ignores SIGTERM while that child runs, so we signal the whole group (see kill()).
+    this.proc = spawn(bin, args, { cwd: opts.cwd, env: opts.env, stdio: 'pipe', detached: true });
     this.proc.stdout.setEncoding('utf8');
     this.proc.stdout.on('data', (chunk: string) => this.onData(chunk));
     this.proc.stderr.setEncoding('utf8');
@@ -176,6 +178,18 @@ export class AcpClient extends EventEmitter<AcpClientEvents> {
   }
 
   kill(): void {
-    if (!this.exited) this.proc.kill('SIGTERM');
+    if (this.exited) return;
+    this.signalGroup('SIGTERM');
+    setTimeout(() => {
+      if (!this.exited) this.signalGroup('SIGKILL');
+    }, 3000).unref();
+  }
+
+  private signalGroup(signal: NodeJS.Signals): void {
+    try {
+      if (this.proc.pid) process.kill(-this.proc.pid, signal);
+    } catch {
+      this.proc.kill(signal);
+    }
   }
 }

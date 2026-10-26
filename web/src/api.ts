@@ -18,7 +18,7 @@ export interface Session {
 export interface SessionInfo extends Session {
   live: boolean;
   modes: { id: string; name: string; description?: string }[];
-  models: { modelId: string; name: string }[];
+  models: ModelInfo[];
 }
 
 export interface EventRow {
@@ -35,6 +35,12 @@ export interface Repo {
   private: boolean;
   pushedAt: string | null;
   description: string | null;
+}
+
+export interface ModelInfo {
+  modelId: string;
+  name: string;
+  description?: string;
 }
 
 export interface Diff {
@@ -61,13 +67,15 @@ export const api = {
   repos: () => call<Repo[]>('GET', '/api/repos'),
   sessions: () => call<Session[]>('GET', '/api/sessions'),
   session: (id: string) => call<SessionInfo>('GET', `/api/sessions/${id}`),
-  create: (body: { repo: string; baseBranch?: string; prompt: string; mode: string }) =>
+  models: () => call<{ models: ModelInfo[]; default: string }>('GET', '/api/models'),
+  create: (body: { repo: string; baseBranch?: string; prompt: string; mode: string; model: string }) =>
     call<Session>('POST', '/api/sessions', body),
   prompt: (id: string, text: string) => call('POST', `/api/sessions/${id}/prompt`, { text }),
   permission: (id: string, requestId: string, optionId: string | null) =>
     call('POST', `/api/sessions/${id}/permission`, { requestId, optionId }),
   cancel: (id: string) => call('POST', `/api/sessions/${id}/cancel`),
   setMode: (id: string, modeId: string) => call('POST', `/api/sessions/${id}/mode`, { modeId }),
+  setModel: (id: string, modelId: string) => call('POST', `/api/sessions/${id}/model`, { modelId }),
   stop: (id: string) => call('POST', `/api/sessions/${id}/stop`),
   diff: (id: string) => call<Diff>('GET', `/api/sessions/${id}/diff`),
   push: (id: string) => call<{ commits: number }>('POST', `/api/sessions/${id}/push`),

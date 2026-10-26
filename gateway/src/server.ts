@@ -35,6 +35,8 @@ export async function buildServer(cfg: Config, sessions: SessionManager): Promis
 
   app.get('/api/sessions', async () => sessions.list());
 
+  app.get('/api/models', async () => sessions.models());
+
   app.post<{ Body: { repo: string; baseBranch?: string; prompt: string; mode?: string; model?: string } }>(
     '/api/sessions',
     async (req) => sessions.create(req.body ?? ({} as never)),
@@ -66,6 +68,11 @@ export async function buildServer(cfg: Config, sessions: SessionManager): Promis
 
   app.post<{ Params: { id: string }; Body: { modeId: string } }>('/api/sessions/:id/mode', async (req) => {
     await sessions.setMode(req.params.id, req.body?.modeId);
+    return { ok: true };
+  });
+
+  app.post<{ Params: { id: string }; Body: { modelId: string } }>('/api/sessions/:id/model', async (req) => {
+    await sessions.setModel(req.params.id, req.body?.modelId);
     return { ok: true };
   });
 
