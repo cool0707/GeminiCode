@@ -63,9 +63,22 @@ Gemini CLI を起動します。
 
 EOF
 
+DEBUG_LOG="$DATA_DIR/logs/login-debug.log"
+mkdir -p "$(dirname "$DEBUG_LOG")"
+: > "$DEBUG_LOG"
+
 cd "$(mktemp -d)"
 # Same storage settings as the gateway uses (see gateway/src/sessions.ts agentEnv).
-env -u GEMINI_API_KEY GEMINI_CLI_HOME="$GEMINI_HOME" GEMINI_FORCE_FILE_STORAGE=true NO_BROWSER=true gemini
+env -u GEMINI_API_KEY GEMINI_CLI_HOME="$GEMINI_HOME" GEMINI_FORCE_FILE_STORAGE=true NO_BROWSER=true \
+  GEMINI_DEBUG_LOG_FILE="$DEBUG_LOG" gemini || true
+
+# Gemini CLI only logs why a Google sign-in was rejected (e.g. account not eligible) to its debug log.
+if grep -qiE "Error authenticating|Failed to sign in|IneligibleTier|ProjectIdRequired|ValidationRequired" "$DEBUG_LOG"; then
+  echo
+  echo "Google アカウントでの認証でエラーが記録されています（$DEBUG_LOG）:"
+  grep -iE -A4 "Error authenticating|Failed to sign in|IneligibleTier|ProjectIdRequired|ValidationRequired" "$DEBUG_LOG" \
+    | grep -vE '^\s+at ' | head -n 30
+fi
 
 if [ -f "$GEMINI_HOME/.gemini/gemini-credentials.json" ] || [ -f "$GEMINI_HOME/.gemini/oauth_creds.json" ]; then
   echo
