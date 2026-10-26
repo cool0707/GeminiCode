@@ -19,6 +19,8 @@ export interface Config {
   allowedEmails: string[];
   insecureNoAuth: boolean;
   idleTimeoutMs: number;
+  startupTimeoutMs: number;
+  geminiHome: string;
   dailyTokenLimit: number;
 }
 
@@ -46,6 +48,10 @@ export function loadConfig(): Config {
     allowedEmails: env('ALLOWED_EMAILS').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean),
     insecureNoAuth: env('GEMINICODE_INSECURE_NO_AUTH') === '1',
     idleTimeoutMs: Number(env('GEMINICODE_IDLE_MINUTES', '30')) * 60_000,
+    startupTimeoutMs: Number(env('GEMINICODE_STARTUP_TIMEOUT_SECONDS', '120')) * 1000,
+    // Gemini CLI gets its own home so a login method chosen in interactive use
+    // (e.g. "Log in with Google", which waits for a browser) never applies here.
+    geminiHome: env('GEMINICODE_GEMINI_HOME', path.join(dataDir, 'gemini-home')),
     dailyTokenLimit: Number(env('GEMINICODE_DAILY_TOKEN_LIMIT', '0')),
   };
   return cfg;

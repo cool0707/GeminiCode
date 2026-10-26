@@ -31,10 +31,22 @@ async function handle(msg: any): Promise<unknown> {
   switch (msg.method) {
     case 'initialize':
       return { protocolVersion: 1, agentCapabilities: { loadSession: true }, authMethods: [] };
-    case 'session/new':
+    case 'session/new': {
       cwd = p.cwd;
       if (process.env.GEMINI_API_KEY !== 'test-key') throw { code: -32000, message: 'no api key' };
+      // Like the real CLI: a saved "Log in with Google" choice wins over the API key and
+      // waits for a browser login, printing the URL (no newline) to stdout.
+      let selected = '';
+      try {
+        const file = path.join(process.env.GEMINI_CLI_HOME ?? '', '.gemini', 'settings.json');
+        selected = JSON.parse(fs.readFileSync(file, 'utf8')).security.auth.selectedType;
+      } catch {}
+      if (selected !== 'gemini-api-key') {
+        process.stdout.write('\x1b[?1049hPlease visit the following URL to authorize the application: https://accounts.google.com/o/oauth2/auth');
+        return new Promise(() => {});
+      }
       return { sessionId: 'fake-session', modes, models };
+    }
     case 'session/load':
       cwd = p.cwd;
       update(p.sessionId, { sessionUpdate: 'user_message_chunk', content: { type: 'text', text: 'replayed' } });

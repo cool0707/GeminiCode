@@ -175,9 +175,16 @@ powershell -ExecutionPolicy Bypass -File \\wsl$\Ubuntu\home\<WSLのユーザー�
 | `forbidden` | `ALLOWED_EMAILS` にログインしたメールアドレスが入っているか |
 | リポジトリ一覧が空 / `GitHub API ... 401` | `GITHUB_TOKEN` の有効期限と、対象リポジトリが選ばれているか |
 | `API key not valid` | `GEMINI_API_KEY` |
+| 「考えています…」のまま進まない | `journalctl -u geminicode -n 40` に `[session …] initialized` と `ACP session … ready` が出ているか。出ていなければ、Gemini CLI の起動で止まっています。2 分で時間切れのエラーになり、そのとき Gemini CLI の出力が画面に表示されます |
 | セッションがエラーになる | 画面のエラー表示と、`~/.local/share/geminicode/logs/<セッションID>.log`（Gemini CLI の stderr） |
 
 設定を変えたら `sudo systemctl restart geminicode` で反映します。更新は `git pull && ./deploy/install.sh` です。
+
+## Gemini CLI の設定について
+
+GeminiCode から起動する Gemini CLI は、`~/.local/share/geminicode/gemini-home/.gemini/` を設定フォルダとして使います。WSL で対話的に使う `gemini` の `~/.gemini` とは別です。
+- 理由: 対話で「Google でログイン」を選んだ設定が残っていると、Gemini CLI はブラウザでのログインを待って止まってしまうためです。専用フォルダでは常に API キーで認証します。
+- `~/.gemini/GEMINI.md`（全体のメモリ）や、`~/.gemini` に設定した MCP サーバー・拡張機能は使われません。必要なものは専用フォルダ側に置いてください。リポジトリ内の `GEMINI.md` はこれまでどおり読まれます。
 
 ## セキュリティ上の注意
 

@@ -28,6 +28,8 @@ interface LiveAgent {
   permissions: Map<string, PendingPermission>;
   modes: { id: string; name: string; description?: string }[];
   models: { modelId: string; name: string }[];
+  /** Set once we have already reported this agent as failed, so the exit handler stays quiet. */
+  failed: boolean;
 }
 
 export interface CreateSessionInput {
@@ -54,7 +56,30 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
     this.gh = new GitHub(cfg);
     fs.mkdirSync(path.join(cfg.dataDir, 'workspaces'), { recursive: true });
     fs.mkdirSync(path.join(cfg.dataDir, 'logs'), { recursive: true });
+    this.prepareGeminiHome();
     this.recoverAfterRestart();
+  }
+
+  /** Pins the agent's auth method to the API key in its private settings file. */
+  private prepareGeminiHome(): void {
+    const dir = path.join(this.cfg.geminiHome, '.gemini');
+    const file = path.join(dir, 'settings.json');
+    fs.mkdirSync(dir, { recursive: true });
+    let settings: any = {};
+    try {
+      settings = JSON.parse(fs.readFileSync(file, 'utf8'));
+    } catch {
+      // Missing or unreadable: start fresh.
+    }
+    settings.security ??= {};
+    settings.security.auth ??= {};
+    if (settings.security.auth.selectedType === 'gemini-api-key') return;
+    settings.security.auth.selectedType = 'gemini-api-key';
+    fs.writeFileSync(file, JSON.stringify(settings, null, 2) + '\n');
+  }
+
+  private log(id: string, msg: string): void {
+    console.info(`[session ${id.slice(0, 8)}] ${msg}`);
   }
 
   /** The gateway owns no agent processes at startup: close out whatever the previous run left open. */
@@ -182,7 +207,11 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
   }
 
   private agentEnv(): NodeJS.ProcessEnv {
-    const env: NodeJS.ProcessEnv = { ...process.env, GEMINI_API_KEY: this.cfg.geminiApiKey };
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      GEMINI_API_KEY: this.cfg.geminiApiKey,
+      GEMINI_CLI_HOME: this.cfg.geminiHome,
+    };
     // The agent runs shell commands on the model's behalf: keep gateway secrets out of its reach.
     for (const k of ['GITHUB_TOKEN', 'CF_ACCESS_AUD', 'CF_ACCESS_TEAM_DOMAIN']) delete env[k];
     return env;
@@ -197,6 +226,7 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
       cwd: row.workdir,
       env: this.agentEnv(),
     });
+    this.log(id, `starting ${this.cfg.geminiBin} --acp in ${row.workdir}`);
     const log = fs.createWriteStream(path.join(this.cfg.dataDir, 'logs', `${id}.log`), { flags: 'a' });
     let stderrTail = '';
     client.on('stderr', (s) => {
@@ -213,6 +243,7 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
       modes: [],
       models: [],
       ready: Promise.resolve(),
+      failed: false,
     };
 
     client.on('update', ({ update }) => {
@@ -233,6 +264,7 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
 
     client.on('exit', (code) => {
       log.end();
+      this.log(id, `agent exited (code ${code})`);
       clearTimeout(live.idleTimer);
       for (const p of live.permissions.values()) {
         this.append(id, 'permission_resolved', { requestId: p.requestId, outcome: 'expired' });
@@ -241,15 +273,16 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
       if (this.agents.get(id) === live) this.agents.delete(id);
       const current = this.db.getSession(id);
       if (!current) return;
-      if (live.busy) {
+      if (live.busy && !live.failed) {
         this.fail(id, new Error(`Gemini CLI が異常終了しました (code ${code})\n${stderrTail.trim()}`));
       } else if (ACTIVE.includes(current.status)) {
         this.setStatus(id, 'stopped');
       }
     });
 
-    live.ready = (async () => {
+    const startup = (async () => {
       const init = await client.initialize();
+      this.log(id, 'initialized');
       let modes, models;
       if (row.acp_session_id && init.agentCapabilities?.loadSession) {
         live.loading = true;
@@ -264,6 +297,7 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
         ({ modes, models } = res);
         this.db.updateSession(id, { acp_session_id: res.sessionId });
       }
+      this.log(id, `ACP session ${live.acpSessionId} ready`);
       live.modes = modes?.availableModes ?? [];
       live.models = models?.availableModels ?? [];
       if (modes && row.mode && modes.currentModeId !== row.mode) await client.setMode(live.acpSessionId, row.mode);
@@ -273,6 +307,24 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
         });
       }
     })();
+    let timer: NodeJS.Timeout | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        live.failed = true;
+        const output = stripAnsi(`${stderrTail}${client.pendingOutput()}`).trim().slice(-1500);
+        this.log(id, `startup timed out; output: ${output || '(none)'}`);
+        client.kill();
+        reject(
+          new Error(
+            `Gemini CLI が ${this.cfg.startupTimeoutMs / 1000} 秒以内に起動しませんでした。` +
+              (output ? `\n\nGemini CLI の出力:\n${output}` : ''),
+          ),
+        );
+      }, this.cfg.startupTimeoutMs);
+    });
+    live.ready = Promise.race([startup, timeout]).finally(() => clearTimeout(timer));
+    // Avoid an unhandled rejection when nobody is awaiting yet; runTurn awaits live.ready.
+    live.ready.catch(() => {});
     this.agents.set(id, live);
     return live;
   }
@@ -423,4 +475,9 @@ export function readableError(message: string): string {
     message = inner;
   }
   return message;
+}
+
+function stripAnsi(text: string): string {
+  // eslint-disable-next-line no-control-regex
+  return text.replace(/\x1b\[[0-9;?<>=]*[ -/]*[@-~]/g, '').replace(/\x1b[()][0-9A-Za-z]/g, '');
 }

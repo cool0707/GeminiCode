@@ -79,6 +79,8 @@ before(async () => {
     allowedEmails: [],
     insecureNoAuth: true,
     idleTimeoutMs: 0,
+    startupTimeoutMs: 3000,
+    geminiHome: path.join(tmp, 'gemini-home'),
     dailyTokenLimit: 0,
   };
   fs.mkdirSync(cfg.dataDir, { recursive: true });
@@ -209,4 +211,24 @@ test('readableError unwraps nested API error JSON', async () => {
   const nested = JSON.stringify({ error: { message: JSON.stringify({ error: { code: 400, message: 'API key not valid.' } }) } });
   assert.equal(readableError(nested), 'API key not valid.');
   assert.equal(readableError('plain text'), 'plain text');
+});
+
+test('a saved Google login does not hang the session forever', async () => {
+  const settings = path.join(tmp, 'gemini-home', '.gemini', 'settings.json');
+  assert.equal(JSON.parse(fs.readFileSync(settings, 'utf8')).security.auth.selectedType, 'gemini-api-key');
+  const original = fs.readFileSync(settings, 'utf8');
+  fs.writeFileSync(settings, JSON.stringify({ security: { auth: { selectedType: 'oauth-personal' } } }));
+  try {
+    const created = await api('POST', '/api/sessions', { repo: 'owner/repo', prompt: 'hello' });
+    const id: string = created.json.id;
+    await waitFor(() => db.getSession(id)?.status === 'error', 'startup timeout', 10_000);
+    const error = db.getSession(id)!.error!;
+    assert.match(error, /起動しませんでした/);
+    assert.match(error, /Please visit the following URL/);
+    assert.ok(!error.includes('\x1b'), 'ANSI escapes are stripped');
+    const errors = db.eventsAfter(id, 0).filter((e) => e.kind === 'system' && (e.data as any).level === 'error');
+    assert.equal(errors.length, 1, 'reported once, not again when the killed agent exits');
+  } finally {
+    fs.writeFileSync(settings, original);
+  }
 });

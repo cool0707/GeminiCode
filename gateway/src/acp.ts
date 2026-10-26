@@ -125,6 +125,11 @@ export class AcpClient extends EventEmitter<AcpClientEvents> {
     this.proc.stdin.write(JSON.stringify(msg) + '\n');
   }
 
+  /** Unterminated stdout, e.g. an interactive prompt the agent printed while waiting. */
+  pendingOutput(): string {
+    return this.buffer;
+  }
+
   request<T>(method: string, params: unknown): Promise<T> {
     if (this.exited) return Promise.reject(new Error('agent is not running'));
     const id = this.nextId++;
