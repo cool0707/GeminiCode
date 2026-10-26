@@ -61,8 +61,8 @@ gemini --version
 ## 5. Gemini の認証方法を決め、GitHub トークンを用意する
 
 **Gemini の認証（どちらか）**
-- **Google アカウントでログイン（おすすめ）**: Google AI Pro / Ultra を契約していれば、その利用枠（1 日 1,500 回程度）が使われ、追加料金はかかりません。env に `GEMINICODE_AUTH=google` と書き、手順 9 のあとで `./deploy/login-google.sh` を実行してログインします。
 - **API キー**: env に `GEMINICODE_AUTH=api-key` と `GEMINI_API_KEY` を書きます。キーは https://aistudio.google.com/apikey で作成します。Pro 契約の枠はキーには付かず、課金を有効にしていないキーは無料枠（1 日 250 回程度・Flash のみ）です。Gemini CLI は 1 回の指示で何度も API を呼ぶので、すぐ上限に達します。課金を有効にする場合は、Google Cloud コンソールの **お支払い → 予算とアラート** で上限アラートを設定してください。
+- **Google アカウントでログイン**: 2026 年 6 月 18 日以降、個人向けのアカウント（無料・Google AI Pro・Ultra）では Gemini CLI にログインできなくなりました（「This client is no longer supported for Gemini Code Assist for individuals」と表示されます）。Gemini Code Assist Standard / Enterprise の契約がある場合だけ使えます。その場合は env に `GEMINICODE_AUTH=google` と書き、手順 9 のあとで `./deploy/login-google.sh` を実行します。
 
 **GitHub fine-grained personal access token**
 1. GitHub → Settings → Developer settings → **Fine-grained tokens** → Generate new token。
@@ -127,7 +127,7 @@ journalctl -u geminicode -f  # ログを見る（Ctrl+C で抜ける）
 
 `Server listening at http://127.0.0.1:8080` と出れば OK です。
 
-**Google アカウントでログインする場合（`GEMINICODE_AUTH=google`）**
+**Google アカウントでログインする場合（`GEMINICODE_AUTH=google`、Code Assist Standard / Enterprise のみ）**
 
 サービスを動かすユーザー（`root` ではない普段のユーザー）で実行します。
 
@@ -196,7 +196,8 @@ powershell -ExecutionPolicy Bypass -File \\wsl$\Ubuntu\home\<WSLのユーザー�
 | リポジトリ一覧が空 / `GitHub API ... 401` | `GITHUB_TOKEN` の有効期限と、対象リポジトリが選ばれているか |
 | `API key not valid` | `GEMINI_API_KEY` |
 | 「Google アカウントでのログインが済んでいません」 | `./deploy/login-google.sh` を実行する |
-| 「daily quota」「上限に達しました」 | API キーの無料枠を使い切っています。`GEMINICODE_AUTH=google` に切り替えると Pro 契約の枠が使えます |
+| 「daily quota」「上限に達しました」 | API キーの無料枠を使い切っています。太平洋時間の 0 時（日本時間の夕方）にリセットされます。続けて使うには、キーの Google Cloud プロジェクトで課金を有効にします（Google AI Pro の契約枠は Gemini CLI では使えません） |
+| `login-google.sh` で「This client is no longer supported」 | 個人向けアカウントは Gemini CLI にログインできなくなりました。`GEMINICODE_AUTH=api-key` に戻してください |
 | 「リトライしています」と出たまま進まない | Gemini API が混雑（503）または上限（429）です。■ で停止し、入力欄の左上のボタンでモデルを Flash 系に切り替えてから送り直してください。停止して 5 秒たっても終わらないときは、Gemini CLI を終了させて止めます |
 | 「考えています…」のまま進まない | `journalctl -u geminicode -n 40` に `[session …] initialized` と `ACP session … ready` が出ているか。出ていなければ、Gemini CLI の起動で止まっています。2 分で時間切れのエラーになり、そのとき Gemini CLI の出力が画面に表示されます |
 | セッションがエラーになる | 画面のエラー表示と、`~/.local/share/geminicode/logs/<セッションID>.log`（Gemini CLI の stderr） |
