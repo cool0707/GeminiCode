@@ -1,0 +1,19 @@
+# install.sh が __USER__ と __REPO__ を置き換えて /etc/systemd/system/ に配置する
+[Unit]
+Description=GeminiCode gateway (Gemini CLI web UI)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__USER__
+WorkingDirectory=__REPO__/gateway
+EnvironmentFile=/etc/geminicode/env
+Environment=NODE_ENV=production
+Environment=NODE_NO_WARNINGS=1
+ExecStart=/usr/bin/env node dist/src/index.js
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

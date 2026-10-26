@@ -27,7 +27,7 @@ Claude アプリの Code（claude.ai/code）の体験を要素に分けると、
 | ACP（Agent Client Protocol） | stdio 上の JSON-RPC。Zed などのエディタ連携用。セッション、ストリーミング差分、ツール呼び出しの進捗、**権限リクエスト**（`session/request_permission`）を構造化して扱える | UI を自作するなら最も適している。U1・U7 をそのまま実装できる |
 | GitHub Actions（run-gemini-cli） | Issue / PR のコメントをきっかけに実行 | 非同期で Git 連携も済むが、チャットのような使い心地にはならない |
 
-> 注意: ACP の起動フラグ（`--experimental-acp` → `--acp` など）は版によって変わってきた。実装前に、使う版の `gemini --help` で確認する。
+> 確認済み（Gemini CLI 0.65.0）: 起動フラグは `--acp`（`--experimental-acp` は非推奨の別名）。`initialize` で `loadSession: true` を返し、承認モード `default` / `autoEdit` / `yolo` / `plan` を `session/set_mode` で切り替えられる。`GEMINI_API_KEY` が環境変数にあれば `authenticate` を呼ばなくても `session/new` が通る。
 
 ## 3. 方式の比較
 
@@ -55,7 +55,7 @@ Claude アプリの Code（claude.ai/code）の体験を要素に分けると、
 ## 4. 推奨構成（方式 C）
 
 ```
-[スマホ PWA] ──HTTPS/WebSocket──> [ゲートウェイ] ──spawn/stdio(ACP)──> [ワーカー: gemini (ACP モード)]
+[スマホ PWA] ──HTTPS(REST + SSE)──> [ゲートウェイ] ──spawn/stdio(ACP)──> [ワーカー: gemini (ACP モード)]
      │                                │                                  │
      │ Web Push                       ├─ SQLite: セッション / イベントログ   └─ ワークスペース（git clone / worktree）
      └────────────────────────────────┤                                      ※ セッションごとにコンテナ or ディレクトリ
@@ -65,8 +65,10 @@ Claude アプリの Code（claude.ai/code）の体験を要素に分けると、
 
 ### 4.1 コンポーネント
 - **フロントエンド（PWA）**：React + Vite。チャット画面、ツールカード（展開すると引数と出力を表示）、権限確認のボトムシート、diff ビューア（`diff2html` など）、セッション一覧。ホーム画面に追加すればアプリのように使え、Web Push も受け取れる（iOS は 16.4 以降で PWA の Push に対応）。
-- **ゲートウェイ**：Node.js / TypeScript。ACP の公式 TS SDK（`@agentclientprotocol/sdk`）が使えるため TS を選ぶ。役割は次の 3 つ。
-  - ブラウザとの WebSocket 接続と、ワーカーのプロセスを**切り離す**（U2）。ACP のイベントはすべて SQLite に追記し、再接続したら続きから再生する。
+- **ゲートウェイ**：Node.js / TypeScript。役割は次の 3 つ。
+  - ブラウザとの接続と、ワーカーのプロセスを**切り離す**（U2）。ACP のイベントはすべて SQLite に追記し、再接続したら続きから再生する。
+  - 実装メモ：ブラウザへの配信は WebSocket ではなく **SSE（Server-Sent Events）** にした。ブラウザの `EventSource` は切断されると自動で再接続し、最後に受け取った ID を `Last-Event-ID` で送ってくるので、「続きから再生」がそのまま実現できる。送信は通常の POST で行う。
+  - 実装メモ：ACP は改行区切りの JSON-RPC で、使うメソッドも少ないため、SDK（API の変化が速い）には依存せず自前で約 200 行で実装した。
   - 権限リクエストを保留状態として保存し、Push で通知して、ブラウザからの応答を ACP に返す（U7・U8）。
   - Git 操作（clone → `gemini/<session-id>` ブランチ作成 → commit / push → PR 作成）（U5）。
 - **ワーカー**：セッションごとに ACP モードの `gemini` を 1 プロセス起動する。作業ディレクトリはセッション専用。Docker で隔離すると U4 に近づく（Gemini CLI 自身のサンドボックス `--sandbox` と併用してもよい）。
@@ -118,7 +120,7 @@ Claude アプリの Code（claude.ai/code）の体験を要素に分けると、
 - WSL 内の `cloudflared` から Cloudflare へ**外向き**に接続するため、ポート開放も固定 IP も不要。スマホ側にアプリを入れる必要もない。
 - Cloudflare Access（無料枠は 50 ユーザーまで）で、`gemini.<自分のドメイン>` へのアクセスを、自分のメールアドレス（ワンタイム PIN か Google ログイン）に限定する。セッション有効期間を長め（例：1 か月）にすれば、スマホでの再ログインはほとんど発生しない。
 - WebSocket と Web Push（HTTPS が必須）はどちらもトンネル越しに動く。
-- 前提：Cloudflare で管理するドメインが 1 つ必要（年 1,500 円前後）。
+- 前提：Cloudflare で管理するドメインが 1 つ必要。**Cloudflare Registrar で `.com` などを新規に取得する**（年 10 ドル前後、原価販売）。
 - ゲートウェイ側でも `Cf-Access-Jwt-Assertion` ヘッダーの JWT を検証し、トンネルを経由しない直接アクセスを拒否する（多層防御）。ゲートウェイは `127.0.0.1` だけで待ち受ける。
 
 代替案：**Tailscale Funnel**（`*.ts.net` を公開 HTTPS にする機能で、スマホ側に Tailscale は不要）。ドメインは要らないが認証層が無いため、アプリ側でパスキー（WebAuthn）か GitHub OAuth のログインを自作する必要がある。ドメインを用意しない場合の選択肢として残す。
@@ -127,9 +129,8 @@ Claude アプリの Code（claude.ai/code）の体験を要素に分けると、
 WSL2 はクライアントプロセスがいなくなると停止するため、次の対策をとる。
 1. `/etc/wsl.conf` に `[boot] systemd=true` を書き、`cloudflared` とゲートウェイを systemd サービスとして登録する。
 2. Windows の**タスクスケジューラ**に、ログオン時（またはスタートアップ時）に `wsl.exe -d Ubuntu --exec sleep infinity` を非表示で実行するタスクを登録し、ディストリビューションを生かし続ける。
-3. `%UserProfile%\.wslconfig` に `[wsl2] vmIdleTimeout=-1` を書く。
-4. Windows の電源設定で「スリープしない」にする（電源接続時のみでも可）。Windows Update による再起動にも備え、2. のタスクで自動復帰させる。
-5. ゲートウェイは起動時に「実行中だったセッション」を検知し、中断した状態として UI に表示する。`--resume` か ACP の `session/load` で再開できるようにする。
+3. Windows の電源設定で「スリープしない」にする（電源接続時のみでも可）。Windows Update による再起動にも備え、2. のタスクで自動復帰させる。
+4. ゲートウェイは起動時に「実行中だったセッション」を検知し、中断した状態として UI に表示する。`--resume` か ACP の `session/load` で再開できるようにする。
 
 ### 7.3 API キーと課金
 - API キーは `/etc/geminicode/env`（パーミッション 600）に置き、systemd の `EnvironmentFile=` でワーカーに渡す。リポジトリにもフロントエンドにも出さない。
@@ -145,14 +146,15 @@ WSL2 はクライアントプロセスがいなくなると停止するため、
 - WSL 内に Docker Engine を直接入れる（Docker Desktop は不要）。ワーカーはセッションごとのコンテナ内で `gemini` を ACP モードで起動し、ワークスペースだけをマウントする。
 - ゲートウェイとコンテナの間は、`docker exec -i` の stdio に ACP をそのまま流す。
 
-## 8. 次の作業（P1）
-本リポジトリを次の構成で作る。
-- `gateway/`：Node.js + TypeScript（Fastify + ws、`@agentclientprotocol/sdk`、better-sqlite3、Octokit）
-- `web/`：React + Vite の PWA
-- `deploy/`：systemd ユニット、`cloudflared` の設定例、Windows タスクスケジューラ用の XML、`.wslconfig` と `wsl.conf` の例
+## 8. 実装状況
 
-## 参考
-- Headless mode reference: https://geminicli.com/docs/cli/headless.md
-- Gemini-CLI-UI（コミュニティ製）: https://gittrend.io/repo/cruzyjapan/Gemini-CLI-UI
-- gemini-cli-desktop（コミュニティ製）: https://x-cmd.com/install/gemini-cli-desktop
-- ACP の統合例: https://docs.paperclip.ing/reference/adapters/gemini-cli.md
+### P1（実装済み）
+- `gateway/`：Node.js + TypeScript（Fastify、jose、`node:sqlite`）。ACP クライアント、セッション管理（アイドル時のプロセス停止と `session/load` による再開）、clone / ブランチ作成 / 差分 / push / PR 作成、Cloudflare Access の JWT 検証、SSE 配信、1 日あたりのトークン上限
+- `web/`：React + Vite の PWA。セッション一覧、新規作成、チャット画面（ツールカード、思考の折りたたみ、許可のボトムシート、承認モードの切り替え）、差分ビュー
+- `deploy/`：systemd ユニット、env の雛形、`install.sh`、`wsl.conf`、Windows のタスク登録スクリプト
+- テスト：偽の ACP エージェントとローカルの bare リポジトリを使った E2E テスト（`npm test`）
+- 手順書：[setup.md](setup.md)
+
+### 残り
+- P2：セッション一覧の絞り込み、PR のレビューコメントを取り込む機能
+- P3：Web Push（承認待ち・完了の通知）、セッションごとのコンテナ隔離、Headless による投げっぱなしモード
